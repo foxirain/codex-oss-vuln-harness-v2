@@ -1,0 +1,15 @@
+{
+  "signals": [
+    {
+      "path": "src/server/upload.go",
+      "source": "advisory",
+      "weight": 9,
+      "summary": "recent traversal fix nearby; hunt for adjacent variants",
+      "url": "",
+      "metadata": {
+        "family": "variant-hunt",
+        "note": "local analyst annotation"
+      }
+    }
+  ]
+}

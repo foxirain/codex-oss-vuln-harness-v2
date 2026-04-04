@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-oss-vuln-harness"
+version = "0.1.0"
+description = "General OSS vulnerability hunting harness for Codex"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = []
+
+[project.scripts]
+oss-harness = "oss_harness.cli:main"
+
+[tool.setuptools]
+packages = ["oss_harness"]
