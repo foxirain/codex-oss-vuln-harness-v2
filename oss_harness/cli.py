@@ -8,15 +8,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from oss_harness.autopilot import run_autopilot
+from oss_harness.automation import run_bootstrap
 from oss_harness.bundle import write_session_bundle
+from oss_harness.findings import list_finding_files, select_finding_files
 from oss_harness.ingest import load_response, parse_response
 from oss_harness.policy import find_default_policy, load_policy, write_policy_template
+from oss_harness.reporting import run_report
+from oss_harness.repro import run_repro
+from oss_harness.reviewing import TIER_ORDER, run_review
 from oss_harness.session import completed_ranks, load_state, record_review, response_archive_dir, response_path, save_state, set_pending_review
 from oss_harness.targeting import discover_candidates, load_json_config
 
-SUBCOMMANDS = {'scan', 'inspect', 'codex', 'next', 'record', 'ingest', 'loop', 'status', 'autopilot', 'init-policy'}
+SUBCOMMANDS = {
+    'scan', 'inspect', 'codex', 'next', 'record', 'ingest', 'loop', 'status', 'autopilot', 'init-policy',
+    'bootstrap', 'review', 'repro', 'report',
+}
 VERDICTS = ['cve_candidate', 'plausible_security_bug', 'latent_bug', 'not_cve_candidate', 'needs_more_context']
 MAX_MANUAL_FOLLOWUPS = 2
+TIER_CHOICES = ['S', 'A', 'B', 'C', 'D']
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_parser = subparsers.add_parser('init-policy', help='Write a starter Markdown policy file.')
     policy_parser.add_argument('path', type=Path, nargs='?', default=Path('.codex-harness.md'), help='Output Markdown path.')
+
+    bootstrap_parser = subparsers.add_parser('bootstrap', help='Use Codex to generate a final policy file and external signals JSON.')
+    bootstrap_parser.add_argument('repo_root', help='Path to the repository to bootstrap.')
+    bootstrap_parser.add_argument('--policy-path', type=Path, help='Output policy path. Defaults to <repo>/.codex-harness.md')
+    bootstrap_parser.add_argument('--signals-path', type=Path, help='Output signals path. Defaults to <repo>/external_signals_YYYY-MM-DD.json')
+    bootstrap_parser.add_argument('--out-dir', type=Path, help='Directory for bootstrap logs and summary. Defaults to <repo>/.codex-bootstrap')
+    _add_codex_task_args(bootstrap_parser, timeout_default='45m')
 
     scan_parser = subparsers.add_parser('scan', help='Score files and generate a review session.')
     scan_parser.add_argument('repo_root', help='Path to the repository to analyze.')
@@ -76,6 +92,24 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser('status', help='Show session review progress.')
     status_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
 
+    review_parser = subparsers.add_parser('review', help='Use Codex to re-review finding files and assign tiers.')
+    review_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
+    review_parser.add_argument('--finding', action='append', default=[], help='Optional finding file path, filename, or substring selector. Repeatable.')
+    _add_codex_task_args(review_parser, timeout_default='20m')
+
+    repro_parser = subparsers.add_parser('repro', help='Generate reproduction scripts and result files for selected findings.')
+    repro_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
+    repro_parser.add_argument('--finding', action='append', default=[], help='Optional finding file path, filename, or substring selector. Repeatable.')
+    repro_parser.add_argument('--tier-min', choices=TIER_CHOICES, help='Optional minimum review tier to select findings from the review index.')
+    _add_codex_task_args(repro_parser, timeout_default='45m')
+
+    report_parser = subparsers.add_parser('report', help='Generate final reports for selected findings using findings, reviews, and repro artifacts.')
+    report_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
+    report_parser.add_argument('--finding', action='append', default=[], help='Optional finding file path, filename, or substring selector. Repeatable.')
+    report_parser.add_argument('--tier-min', choices=TIER_CHOICES, help='Optional minimum review tier to select findings from the review index.')
+    report_parser.add_argument('--template', required=True, help='Template file path or free-form format instruction.')
+    _add_codex_task_args(report_parser, timeout_default='20m')
+
     autopilot_parser = subparsers.add_parser('autopilot', help='Run Codex non-interactively for a fixed time budget.')
     autopilot_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
     autopilot_parser.add_argument('--duration', default='1h', help='Total autopilot budget. Example: 30m, 1h.')
@@ -89,6 +123,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+def _add_codex_task_args(parser: argparse.ArgumentParser, *, timeout_default: str) -> None:
+    parser.add_argument('--timeout', default=timeout_default, help=f'Maximum time budget for each Codex task. Default: {timeout_default}.')
+    parser.add_argument('--model', default='', help='Optional Codex model override.')
+    parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'], default='workspace-write', help='Sandbox mode for codex exec when not bypassing safeguards.')
+    parser.add_argument('--no-full-auto', action='store_true', help='Do not pass --full-auto to codex exec.')
+    parser.add_argument('--dangerously-bypass-approvals-and-sandbox', action='store_true', help="Pass through Codex's unsafe bypass flag.")
+
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     normalized_argv = _normalize_argv(raw_argv)
@@ -98,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         path = write_policy_template(Path(args.path).expanduser().resolve())
         print(f'policy={path}')
         return 0
+    if args.command == 'bootstrap':
+        return _run_bootstrap(parser, args)
     if args.command == 'scan':
         return _run_scan(parser, args)
     if args.command == 'inspect':
@@ -114,10 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         return _run_loop(args)
     if args.command == 'status':
         return _run_status(args)
+    if args.command == 'review':
+        return _run_review(args)
+    if args.command == 'repro':
+        return _run_repro(args)
+    if args.command == 'report':
+        return _run_report(args)
     if args.command == 'autopilot':
         return _run_autopilot(args)
     parser.error(f'unknown command: {args.command}')
     return 2
+
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -126,6 +179,33 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     if argv[0] in SUBCOMMANDS or argv[0] in {'-h', '--help'}:
         return argv
     return ['scan', *argv]
+
+
+
+def _run_bootstrap(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    repo_root = Path(args.repo_root).expanduser().resolve()
+    if not repo_root.exists():
+        parser.error(f'repository does not exist: {repo_root}')
+    if not repo_root.is_dir():
+        parser.error(f'repository is not a directory: {repo_root}')
+    policy_path = Path(args.policy_path).expanduser().resolve() if args.policy_path else repo_root / '.codex-harness.md'
+    signals_path = Path(args.signals_path).expanduser().resolve() if args.signals_path else repo_root / f"external_signals_{datetime.now(UTC).strftime('%Y-%m-%d')}.json"
+    out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else repo_root / '.codex-bootstrap'
+    result = run_bootstrap(
+        repo_root,
+        policy_path=policy_path,
+        signals_path=signals_path,
+        out_dir=out_dir,
+        timeout_spec=args.timeout,
+        model=args.model,
+        sandbox=args.sandbox,
+        full_auto=not args.no_full_auto,
+        unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
+    )
+    for key, value in result.items():
+        print(f'{key}={value}')
+    return 0 if policy_path.exists() and signals_path.exists() else 1
+
 
 
 def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
@@ -152,6 +232,7 @@ def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     return 0
 
 
+
 def _run_inspect(args: argparse.Namespace) -> int:
     manifest = _load_manifest(args.session_dir)
     candidates = manifest.get('candidates', [])
@@ -168,6 +249,7 @@ def _run_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+
 def _run_codex(args: argparse.Namespace) -> int:
     session_dir = Path(args.session_dir).expanduser().resolve()
     manifest = _load_manifest(session_dir)
@@ -179,15 +261,18 @@ def _run_codex(args: argparse.Namespace) -> int:
     return 0
 
 
+
 def _run_next(args: argparse.Namespace) -> int:
     _print_next_prompt(Path(args.session_dir).expanduser().resolve(), include_snippet=args.include_snippet)
     return 0
+
 
 
 def _run_record(args: argparse.Namespace) -> int:
     state = record_review(session_dir=Path(args.session_dir).expanduser().resolve(), rank=args.rank, target=args.target, verdict=args.verdict, notes=args.notes, next_target=args.next_target, next_prompt=args.next_prompt, auto_advance=not args.no_auto_advance)
     _print_record_result(args.rank, args.verdict, state)
     return 0
+
 
 
 def _run_ingest(args: argparse.Namespace) -> int:
@@ -197,6 +282,7 @@ def _run_ingest(args: argparse.Namespace) -> int:
     _print_record_result(args.rank, state['history'][-1]['verdict'], state)
     print(f"parsed_next_target={state['history'][-1].get('next_target', '')}")
     return 0
+
 
 
 def _run_loop(args: argparse.Namespace) -> int:
@@ -221,6 +307,7 @@ def _run_loop(args: argparse.Namespace) -> int:
     return 0
 
 
+
 def _run_status(args: argparse.Namespace) -> int:
     session_dir = Path(args.session_dir).expanduser().resolve()
     manifest = _load_manifest(session_dir)
@@ -235,13 +322,84 @@ def _run_status(args: argparse.Namespace) -> int:
     print(f"pending_rank={state.get('pending_rank')}")
     print(f"pending_target={state.get('pending_target', '')}")
     print(f"fixed_response_file={state.get('pending_response_file', response_path(session_dir))}")
+    print(f"finding_count={len(list_finding_files(session_dir))}")
     for item in state.get('history', [])[-5:]:
         print(f"history rank={item.get('rank')} verdict={item.get('verdict')} target={item.get('target')}")
     return 0
 
 
+
+def _run_review(args: argparse.Namespace) -> int:
+    session_dir = Path(args.session_dir).expanduser().resolve()
+    manifest = _load_manifest(session_dir)
+    finding_files = select_finding_files(session_dir, args.finding)
+    if not finding_files:
+        raise SystemExit(f'no finding files selected under {session_dir / "autopilot" / "findings"}')
+    result = run_review(
+        session_dir,
+        repo_root=Path(manifest['repo_root']).expanduser().resolve(),
+        finding_files=finding_files,
+        timeout_spec=args.timeout,
+        model=args.model,
+        sandbox=args.sandbox,
+        full_auto=not args.no_full_auto,
+        unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
+    )
+    for key, value in result.items():
+        print(f'{key}={value}')
+    return 0
+
+
+
+def _run_repro(args: argparse.Namespace) -> int:
+    session_dir = Path(args.session_dir).expanduser().resolve()
+    manifest = _load_manifest(session_dir)
+    finding_files = _select_findings_for_action(session_dir, args.finding, args.tier_min)
+    if not finding_files:
+        raise SystemExit('no findings selected for repro')
+    result = run_repro(
+        session_dir,
+        repo_root=Path(manifest['repo_root']).expanduser().resolve(),
+        finding_files=finding_files,
+        timeout_spec=args.timeout,
+        model=args.model,
+        sandbox=args.sandbox,
+        full_auto=not args.no_full_auto,
+        unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
+    )
+    for key, value in result.items():
+        print(f'{key}={value}')
+    return 0
+
+
+
+def _run_report(args: argparse.Namespace) -> int:
+    session_dir = Path(args.session_dir).expanduser().resolve()
+    manifest = _load_manifest(session_dir)
+    finding_files = _select_findings_for_action(session_dir, args.finding, args.tier_min)
+    if not finding_files:
+        raise SystemExit('no findings selected for report generation')
+    template_text = _load_template_text(args.template)
+    result = run_report(
+        session_dir,
+        repo_root=Path(manifest['repo_root']).expanduser().resolve(),
+        finding_files=finding_files,
+        template_text=template_text,
+        timeout_spec=args.timeout,
+        model=args.model,
+        sandbox=args.sandbox,
+        full_auto=not args.no_full_auto,
+        unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
+    )
+    for key, value in result.items():
+        print(f'{key}={value}')
+    return 0
+
+
+
 def _run_autopilot(args: argparse.Namespace) -> int:
     return run_autopilot(Path(args.session_dir), include_snippet=args.include_snippet, duration_spec=args.duration, per_run_timeout_spec=args.per_run_timeout, model=args.model, sandbox=args.sandbox, full_auto=not args.no_full_auto, unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox, stop_on_finding=args.stop_on_finding)
+
 
 
 def _load_manifest(session_dir: Path) -> dict:
@@ -250,6 +408,7 @@ def _load_manifest(session_dir: Path) -> dict:
         raise SystemExit(f'missing session manifest: {manifest_path}')
     with manifest_path.open('r', encoding='utf-8') as handle:
         return json.load(handle)
+
 
 
 def _load_rank_prompt(session_dir: Path, manifest: dict, rank: int) -> tuple[str, Path, Path, str]:
@@ -263,7 +422,10 @@ def _load_rank_prompt(session_dir: Path, manifest: dict, rank: int) -> tuple[str
     bundle_prefix = f"{rank:02d}-{candidate['path'].replace('/', '__')}"
     prompt_path = bundle_dir / f'{bundle_prefix}.md'
     snippet_path = bundle_dir / f'{bundle_prefix}.snippet.txt'
+    if not prompt_path.exists():
+        raise SystemExit(f'missing prompt bundle: {prompt_path}. Rerun `oss-harness scan` with the current harness version and use the new session directory.')
     return prompt_path.read_text(encoding='utf-8'), prompt_path, snippet_path, candidate['path']
+
 
 
 def _print_next_prompt(session_dir: Path, include_snippet: bool) -> None:
@@ -293,6 +455,7 @@ def _print_next_prompt(session_dir: Path, include_snippet: bool) -> None:
     _print_codex_runbook(manifest['repo_root'], prompt, prompt_path, snippet_path, include_snippet, response_path(session_dir))
 
 
+
 def _ingest_text(session_dir: Path, text: str, rank: int | None, target: str, next_prompt: str, auto_advance: bool) -> dict:
     parsed = parse_response(text)
     state = load_state(session_dir)
@@ -302,6 +465,7 @@ def _ingest_text(session_dir: Path, text: str, rank: int | None, target: str, ne
         next_target = ''
         next_prompt = ''
     return record_review(session_dir=session_dir, rank=rank, target=target, verdict=parsed['verdict'], notes=parsed['notes'], next_target=next_target, next_prompt=next_prompt, auto_advance=auto_advance)
+
 
 
 def _print_codex_runbook(repo_root: str, prompt: str, prompt_path: Path, snippet_path: Path | None, include_snippet: bool, fixed_response_file: Path) -> None:
@@ -330,6 +494,7 @@ def _print_codex_runbook(repo_root: str, prompt: str, prompt_path: Path, snippet
         print(f'Snippet file: {snippet_path}')
 
 
+
 def _next_pending_rank(state: dict, manifest: dict) -> int:
     done = completed_ranks(state)
     candidates = manifest.get('candidates', [])
@@ -343,6 +508,7 @@ def _next_pending_rank(state: dict, manifest: dict) -> int:
     raise SystemExit('all ranked targets in this session have already been reviewed')
 
 
+
 def _is_actionable_candidate(path: str) -> bool:
     lowered = path.lower()
     if lowered.startswith(('docs/', 'examples/', 'samples/', 'vendor/', 'third_party/')):
@@ -352,6 +518,7 @@ def _is_actionable_candidate(path: str) -> bool:
     if lowered.endswith(('_test.go', '.spec.js', '.test.js', '.spec.ts', '.test.ts')):
         return False
     return True
+
 
 
 def _manual_followup_prompt(state: dict, manual_target: str, manual_prompt: str) -> str:
@@ -369,8 +536,35 @@ def _manual_followup_prompt(state: dict, manual_target: str, manual_prompt: str)
     return '\n'.join(lines) + '\n'
 
 
+
 def _print_record_result(rank: int | None, verdict: str, state: dict) -> None:
     print(f'recorded_rank={rank}')
     print(f'verdict={verdict}')
     print(f"current_rank={state.get('current_rank', 1)}")
     print(f"manual_next_target={state.get('manual_next_target', '')}")
+
+
+
+def _select_findings_for_action(session_dir: Path, selectors: list[str], tier_min: str | None) -> list[Path]:
+    finding_files = select_finding_files(session_dir, selectors)
+    if not tier_min:
+        return finding_files
+    review_index_path = session_dir / 'review' / 'review_index.json'
+    if not review_index_path.exists():
+        raise SystemExit(f'missing review index: {review_index_path}. Run `oss-harness review` first or omit --tier-min.')
+    review_index = json.loads(review_index_path.read_text(encoding='utf-8'))
+    allowed_names = {
+        item.get('finding_file')
+        for item in review_index.get('reviews', [])
+        if TIER_ORDER.get(str(item.get('tier', 'D')).upper(), 0) >= TIER_ORDER[tier_min]
+    }
+    filtered = [path for path in finding_files if path.name in allowed_names]
+    return filtered
+
+
+
+def _load_template_text(value: str) -> str:
+    candidate = Path(value).expanduser()
+    if candidate.exists() and candidate.is_file():
+        return candidate.read_text(encoding='utf-8')
+    return value

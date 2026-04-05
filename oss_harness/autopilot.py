@@ -165,6 +165,8 @@ def _render_next_prompt(session_dir: Path, *, include_snippet: bool) -> dict:
 
     rank, candidate = _next_pending_rank(state, manifest)
     prompt_path, snippet_path = _bundle_paths(session_dir, rank, candidate['path'])
+    if not prompt_path.exists():
+        raise SystemExit(f'missing prompt bundle for rank {rank}: {prompt_path}. Rerun oss-harness scan for this repository and use the new session directory.')
     prompt = prompt_path.read_text(encoding='utf-8')
     set_pending_review(session_dir, rank, candidate['path'], str(prompt_path))
     return {'repo_root': manifest['repo_root'], 'prompt': prompt, 'prompt_source': prompt_path, 'snippet_path': snippet_path, 'include_snippet': include_snippet, 'target': candidate['path'], 'rank': rank}
