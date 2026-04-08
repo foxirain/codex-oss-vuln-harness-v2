@@ -26,6 +26,11 @@ DEFAULT_EXCLUDED_FILE_PATTERNS = [
     re.compile(r'(_test|_unittest|unittest|\.test|\.spec|\.min)\.', re.IGNORECASE),
 ]
 
+GENERATED_PATH_PATTERNS = [
+    re.compile(r'(^|/)(stage0|genfiles?|generated|autogen|codegen|_generated)(/|$)', re.IGNORECASE),
+    re.compile(r'(?:^|/)(?:ruby-upb\.(?:c|h)|.*\.upb\.(?:c|cc|cpp|h|hpp)|.*\.pb\.(?:c|cc|cpp|h|hpp)|.*_pb2\.py|.*\.designer\.(?:cs|vb))$', re.IGNORECASE),
+]
+
 FRAMEWORK_MARKERS = {
     'fastapi': [r'\bFastAPI\b', r'from fastapi import', r'fastapi\.'],
     'django': [r'from django\.', r'\bdjango\.urls\b', r'urlpatterns\s*='],
@@ -354,10 +359,23 @@ def _language_for_path(file_path: Path, active_languages: set[str]) -> str:
     return ''
 
 
-def _retention_reason(*, score: int, signals: list[Signal], external_signals: list[ExternalSignal], hot_path_hits: int, entrypoint_hits: int, focus_hits: int, in_degree: int, out_degree: int, semantic_meta: object | None) -> str:
+def _retention_reason(*, score: int, signals: list[Signal], external_signals: list[ExternalSignal], hot_path_hits: int, entrypoint_hits: int, focus_hits: int, in_degree: int, out_degree: int, semantic_meta: object | None, generated_profile: dict[str, object] | None = None) -> str:
     if score >= 10 or len(signals) >= 2:
         return ''
+    generated_profile = generated_profile or {'is_generated': False, 'is_severe_generated': False}
     profile = _external_signal_profile(external_signals)
+    if generated_profile.get('is_severe_generated'):
+        if profile['crash_like'] and profile['crash_weight'] >= 10:
+            return 'severe generated artifact retained only because crash evidence is direct and strong'
+        if profile['advisory_like'] and profile['advisory_weight'] >= 10:
+            return 'severe generated artifact retained only because advisory evidence is direct and strong'
+        return ''
+    if generated_profile.get('is_generated'):
+        if profile['crash_like'] and profile['crash_weight'] >= 10:
+            return 'generated artifact retained because crash evidence is direct and strong'
+        if profile['advisory_like'] and profile['advisory_weight'] >= 10:
+            return 'generated artifact retained because advisory evidence is direct and strong'
+        return ''
     if _has_strong_external_signal(external_signals):
         if profile['crash_like']:
             return 'crash or sanitizer evidence should preserve this candidate despite sparse inline signatures'
@@ -372,11 +390,11 @@ def _retention_reason(*, score: int, signals: list[Signal], external_signals: li
         return 'policy focus area reinforced by graph or external evidence'
     if profile['source_count'] >= 2 and profile['total_weight'] >= 9:
         return 'multiple independent external signal families justify retention'
-    if in_degree >= 3 or out_degree >= 8:
+    if in_degree >= 4 or out_degree >= 10:
         return 'graph-central file should be retained for review'
     if semantic_meta is not None and getattr(semantic_meta, 'entrypoint_lines', None):
         return 'semantic entrypoint evidence outweighs sparse regex hits'
-    if semantic_meta is not None and getattr(semantic_meta, 'sink_lines', None) and (external_signals or in_degree >= 2):
+    if semantic_meta is not None and getattr(semantic_meta, 'sink_lines', None) and (profile['source_count'] >= 1 or in_degree >= 3):
         return 'semantic sink evidence combined with graph or external support'
     return ''
 
@@ -407,20 +425,35 @@ def _external_signal_profile(external_signals: list[ExternalSignal]) -> dict[str
     crash_weight = 0
     advisory_weight = 0
     git_weight = 0
+    sbom_weight = 0
+    sbom_vuln_weight = 0
     for signal in external_signals:
         weight = int(signal.weight)
-        total_weight += weight
         max_weight = max(max_weight, weight)
-        source_buckets.add(signal.source)
         if signal.source in crash_sources:
+            source_buckets.add(signal.source)
+            total_weight += weight
             crash_like += 1
             crash_weight += weight
         elif signal.source in advisory_sources:
+            source_buckets.add(signal.source)
+            total_weight += weight
             advisory_like += 1
             advisory_weight += weight
         elif signal.source in git_sources:
+            source_buckets.add(signal.source)
+            total_weight += weight
             git_like += 1
             git_weight += weight
+        elif signal.source == 'sbom':
+            sbom_weight += weight
+            metadata = getattr(signal, 'metadata', {}) or {}
+            if metadata.get('vulnerabilities'):
+                source_buckets.add('sbom-vuln')
+                total_weight += weight
+                advisory_like += 1
+                advisory_weight += weight
+                sbom_vuln_weight += weight
     return {
         'source_count': len(source_buckets),
         'total_weight': total_weight,
@@ -431,7 +464,33 @@ def _external_signal_profile(external_signals: list[ExternalSignal]) -> dict[str
         'crash_weight': crash_weight,
         'advisory_weight': advisory_weight,
         'git_weight': git_weight,
+        'sbom_weight': sbom_weight,
+        'sbom_vuln_weight': sbom_vuln_weight,
     }
+
+
+def _artifact_profile(rel_path: str, content: str) -> dict[str, object]:
+    lowered = rel_path.lower()
+    severe = any(pattern.search(lowered) for pattern in GENERATED_PATH_PATTERNS)
+    generated_markers = 0
+    if severe:
+        generated_markers += 2
+    if any(token in lowered for token in ('do_not_edit', 'generated', 'autogen', 'stage0', 'codegen')):
+        generated_markers += 1
+    header = '\n'.join(content.splitlines()[:6]).lower()
+    if 'generated by' in header or 'do not edit' in header or 'automatically generated' in header:
+        generated_markers += 2
+    is_generated = generated_markers >= 2
+    if severe:
+        return {'is_generated': True, 'is_severe_generated': True, 'signal_multiplier': 0.12, 'score_penalty': 28, 'reason': 'generated or bridge artifact surface'}
+    if is_generated:
+        return {'is_generated': True, 'is_severe_generated': False, 'signal_multiplier': 0.35, 'score_penalty': 14, 'reason': 'generated or low-value artifact surface'}
+    return {'is_generated': False, 'is_severe_generated': False, 'signal_multiplier': 1.0, 'score_penalty': 0, 'reason': ''}
+
+
+def _weighted_signal_value(weight: int, artifact_profile: dict[str, object]) -> int:
+    multiplier = float(artifact_profile.get('signal_multiplier', 1.0))
+    return max(1, int(round(weight * multiplier)))
 
 
 def _detect_repo_context(repo_root: Path, active_languages: set[str], framework_hints: set[str]) -> dict:
@@ -470,6 +529,7 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
         return None
 
     rules = LANGUAGE_RULES[language]
+    artifact_profile = _artifact_profile(rel_path, content)
     score = 0
     reasons: list[str] = []
     path_signals: list[str] = []
@@ -577,8 +637,9 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
         for name, pattern, weight, rationale in compiled_patterns:
             if not pattern.search(line):
                 continue
-            signals.append(Signal(name=name, weight=weight, line_no=index, line=line.strip(), rationale=rationale, language=language))
-            score += weight
+            effective_weight = _weighted_signal_value(weight, artifact_profile)
+            signals.append(Signal(name=name, weight=effective_weight, line_no=index, line=line.strip(), rationale=rationale, language=language))
+            score += effective_weight
             if 'route' in name or 'handler' in name or 'request_access' in name:
                 attack_surfaces.add('request entrypoint')
                 entrypoint_markers.add(name)
@@ -604,6 +665,10 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
             score += 5
             reasons.append(f'policy_preferred_sink:{sink} (+5) aligns with policy-requested sink class')
 
+    if artifact_profile['score_penalty']:
+        score -= int(artifact_profile['score_penalty'])
+        reasons.append(f"artifact_penalty (-{artifact_profile['score_penalty']}) {artifact_profile['reason']}")
+
     retention_reason = _retention_reason(
         score=score,
         signals=signals,
@@ -614,12 +679,18 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
         in_degree=in_degree,
         out_degree=out_degree,
         semantic_meta=semantic_meta,
+        generated_profile=artifact_profile,
     )
     if score < 10 and len(signals) < 2:
         if not retention_reason:
             return None
         score = max(score, 10)
         reasons.append(f'retention_exemption: {retention_reason}')
+
+    if artifact_profile['is_severe_generated'] and not retention_reason:
+        return None
+    if artifact_profile['is_generated'] and score < 18 and not retention_reason:
+        return None
 
     signals.sort(key=lambda item: (-item.weight, item.line_no))
     trimmed_signals = signals[:max_signals_per_file]
