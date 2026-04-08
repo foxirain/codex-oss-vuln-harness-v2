@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 from collections import Counter
@@ -21,7 +22,7 @@ COMMON_EXCLUDE_DIRS = {
 DEFAULT_EXCLUDED_FILE_PATTERNS = [
     re.compile(r'(^|/)(tests?|spec|specs|fixtures|examples?|samples?|demo|benchmarks?)(/|$)', re.IGNORECASE),
     re.compile(r'(^|/)(generated|gen|mock|mocks|vendor|dist|coverage)(/|$)', re.IGNORECASE),
-    re.compile(r'(_test|\.test|\.spec|\.min)\.', re.IGNORECASE),
+    re.compile(r'(_test|_unittest|unittest|\.test|\.spec|\.min)\.', re.IGNORECASE),
 ]
 
 FRAMEWORK_MARKERS = {
@@ -144,6 +145,30 @@ LANGUAGE_RULES = {
     },
 }
 
+
+LANGUAGE_ALIASES = {
+    'c': 'c_cpp',
+    'c++': 'c_cpp',
+    'cpp': 'c_cpp',
+    'cc': 'c_cpp',
+    'c/c++': 'c_cpp',
+    'native': 'c_cpp',
+    'native code': 'c_cpp',
+    'protocol buffers': 'c_cpp',
+    'protobuf': 'c_cpp',
+    'python c extension': 'python',
+    'python extension': 'python',
+    'python bindings': 'python',
+    'swig interface code': 'python',
+    'swig': 'python',
+    'php c extension': 'php',
+    'php extension': 'php',
+    'node': 'javascript',
+    'node.js': 'javascript',
+    'typescript': 'javascript',
+    'golang': 'go',
+}
+
 GLOBAL_PATTERNS = [
     ('authz_check', r'\b(auth|authorize|permission|capab|acl|is_admin|role)\b', 3, 'authorization-sensitive code'),
     ('crypto_or_token', r'\b(jwt|token|session|oauth|cookie|signed)\b', 3, 'session or token handling'),
@@ -159,14 +184,15 @@ def load_json_config(path: Path | None) -> dict:
 
 def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict | None = None, external_signal_path: Path | None = None, crash_dir: Path | None = None) -> tuple[list[Candidate], list[LanguageStat]]:
     config = config or {}
-    language_override = {item.lower() for item in policy_list(policy, 'languages')}
+    language_override = policy_list(policy, 'languages')
     detected_languages = _detect_languages(repo_root)
     active_languages = _select_languages(detected_languages, language_override)
-    include_prefixes = _normalize_prefixes(policy_list(policy, 'include_paths'), config.get('include_paths', []))
-    exclude_prefixes = _normalize_prefixes(policy_list(policy, 'exclude_paths'), config.get('exclude_paths', []))
+    include_prefixes = _canonicalize_policy_paths(repo_root, _normalize_prefixes(policy_list(policy, 'include_paths'), config.get('include_paths', [])))
+    exclude_prefixes = _canonicalize_policy_paths(repo_root, _normalize_prefixes(policy_list(policy, 'exclude_paths'), config.get('exclude_paths', [])))
+    ignore_patterns = _canonicalize_policy_paths(repo_root, _normalize_prefixes(policy_list(policy, 'ignore_patterns')))
     policy_entrypoints = [entry.lower() for entry in policy_list(policy, 'entry_points')]
     focus_terms = [item.lower() for item in policy_list(policy, 'focus_areas')]
-    hot_paths = [item.lower() for item in policy_list(policy, 'hot_paths')]
+    hot_paths = _canonicalize_policy_paths(repo_root, [item.lower() for item in policy_list(policy, 'hot_paths')])
     preferred_sinks = [item.lower() for item in policy_list(policy, 'preferred_sinks')]
     framework_hints = {item.lower() for item in policy_list(policy, 'framework_hints')}
     max_signals_per_file = int(config.get('max_signals_per_file', 12))
@@ -180,7 +206,7 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
         if not file_path.is_file():
             continue
         rel_text = str(file_path.relative_to(repo_root)).replace('\\', '/')
-        if _should_skip_path(rel_text, include_prefixes, exclude_prefixes):
+        if _should_skip_path(rel_text, include_prefixes, exclude_prefixes, ignore_patterns):
             continue
         language = _language_for_path(file_path, active_languages)
         if language:
@@ -193,7 +219,7 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
         if not file_path.is_file():
             continue
         rel_text = str(file_path.relative_to(repo_root)).replace('\\', '/')
-        if _should_skip_path(rel_text, include_prefixes, exclude_prefixes):
+        if _should_skip_path(rel_text, include_prefixes, exclude_prefixes, ignore_patterns):
             continue
         language = _language_for_path(file_path, active_languages)
         if not language:
@@ -242,13 +268,20 @@ def _detect_languages(repo_root: Path) -> Counter[str]:
     return counts
 
 
-def _select_languages(detected_languages: Counter[str], override: set[str]) -> set[str]:
+def _select_languages(detected_languages: Counter[str], override: list[str] | set[str]) -> set[str]:
     if override:
-        selected = {name for name in override if name in LANGUAGE_RULES}
+        selected = {normalized for name in override if (normalized := _normalize_language_name(name)) in LANGUAGE_RULES}
         return selected or set(LANGUAGE_RULES)
     if detected_languages:
         return {name for name, count in detected_languages.items() if count > 0}
     return set(LANGUAGE_RULES)
+
+
+def _normalize_language_name(name: str) -> str:
+    normalized = name.strip().strip('`').strip().lower()
+    if not normalized:
+        return ''
+    return LANGUAGE_ALIASES.get(normalized, normalized)
 
 
 def _normalize_prefixes(*groups: list[str]) -> list[str]:
@@ -261,17 +294,44 @@ def _normalize_prefixes(*groups: list[str]) -> list[str]:
     return prefixes
 
 
-def _should_skip_path(rel_path: str, include_prefixes: list[str], exclude_prefixes: list[str]) -> bool:
+def _canonicalize_policy_paths(repo_root: Path, items: list[str]) -> list[str]:
+    repo_prefix = str(repo_root.expanduser().resolve()).replace('\\', '/').rstrip('/') + '/'
+    normalized_items: list[str] = []
+    for item in items:
+        normalized = item.strip().strip('`').strip().replace('\\', '/')
+        if not normalized:
+            continue
+        if normalized.startswith(repo_prefix):
+            normalized = normalized[len(repo_prefix):]
+        else:
+            normalized = normalized.lstrip('/')
+        normalized_items.append(normalized)
+    return normalized_items
+
+
+def _should_skip_path(rel_path: str, include_prefixes: list[str], exclude_prefixes: list[str], ignore_patterns: list[str]) -> bool:
     lowered = rel_path.lower()
     if any(part in COMMON_EXCLUDE_DIRS for part in lowered.split('/')):
         return True
     if _matches_excluded_pattern(lowered):
         return True
-    if include_prefixes and not any(lowered.startswith(prefix.lower()) for prefix in include_prefixes):
+    if any(_matches_path_pattern(lowered, pattern) for pattern in ignore_patterns):
         return True
-    if any(lowered.startswith(prefix.lower()) for prefix in exclude_prefixes):
+    if include_prefixes and not any(_matches_path_pattern(lowered, pattern) for pattern in include_prefixes):
+        return True
+    if any(_matches_path_pattern(lowered, pattern) for pattern in exclude_prefixes):
         return True
     return False
+
+
+def _matches_path_pattern(rel_path: str, pattern: str) -> bool:
+    candidate = pattern.strip().strip('`').strip().replace('\\', '/').lower()
+    if not candidate:
+        return False
+    if any(token in candidate for token in '*?[]'):
+        return fnmatch.fnmatch(rel_path, candidate)
+    prefix = candidate.rstrip('/')
+    return rel_path == prefix or rel_path.startswith(prefix + '/')
 
 
 def _matches_excluded_pattern(rel_path: str) -> bool:
@@ -280,10 +340,95 @@ def _matches_excluded_pattern(rel_path: str) -> bool:
 
 def _language_for_path(file_path: Path, active_languages: set[str]) -> str:
     suffix = file_path.suffix.lower()
+    if suffix == '.i':
+        if 'python' in active_languages:
+            return 'python'
+        if 'c_cpp' in active_languages:
+            return 'c_cpp'
     for name in active_languages:
         if suffix in LANGUAGE_RULES[name]['extensions']:
             return name
     return ''
+
+
+def _retention_reason(*, score: int, signals: list[Signal], external_signals: list[ExternalSignal], hot_path_hits: int, entrypoint_hits: int, focus_hits: int, in_degree: int, out_degree: int, semantic_meta: object | None) -> str:
+    if score >= 10 or len(signals) >= 2:
+        return ''
+    profile = _external_signal_profile(external_signals)
+    if _has_strong_external_signal(external_signals):
+        if profile['crash_like']:
+            return 'crash or sanitizer evidence should preserve this candidate despite sparse inline signatures'
+        if profile['advisory_like']:
+            return 'advisory or CVE-adjacent evidence should preserve this candidate despite sparse inline signatures'
+        return 'strong external evidence should preserve this candidate despite sparse inline signatures'
+    if hot_path_hits and (profile['total_weight'] >= 6 or in_degree >= 2 or out_degree >= 6):
+        return 'policy-prioritized file reinforced by graph or external evidence'
+    if entrypoint_hits >= 2 or (entrypoint_hits and profile['source_count'] >= 2):
+        return 'policy-declared attack surface reinforced by independent evidence'
+    if focus_hits >= 2 and (profile['source_count'] >= 1 or in_degree >= 2):
+        return 'policy focus area reinforced by graph or external evidence'
+    if profile['source_count'] >= 2 and profile['total_weight'] >= 9:
+        return 'multiple independent external signal families justify retention'
+    if in_degree >= 3 or out_degree >= 8:
+        return 'graph-central file should be retained for review'
+    if semantic_meta is not None and getattr(semantic_meta, 'entrypoint_lines', None):
+        return 'semantic entrypoint evidence outweighs sparse regex hits'
+    if semantic_meta is not None and getattr(semantic_meta, 'sink_lines', None) and (external_signals or in_degree >= 2):
+        return 'semantic sink evidence combined with graph or external support'
+    return ''
+
+
+def _has_strong_external_signal(external_signals: list[ExternalSignal]) -> bool:
+    profile = _external_signal_profile(external_signals)
+    if profile['crash_like'] >= 1 and profile['crash_weight'] >= 8:
+        return True
+    if profile['advisory_like'] >= 1 and profile['advisory_weight'] >= 7:
+        return True
+    if profile['source_count'] >= 2 and profile['total_weight'] >= 10:
+        return True
+    if profile['max_weight'] >= 10:
+        return True
+    return False
+
+
+def _external_signal_profile(external_signals: list[ExternalSignal]) -> dict[str, int]:
+    crash_sources = {'crash', 'sanitizer', 'oss-fuzz', 'clusterfuzz', 'syzbot'}
+    advisory_sources = {'advisory', 'cve', 'issue', 'pr', 'hardening'}
+    git_sources = {'git'}
+    source_buckets: set[str] = set()
+    total_weight = 0
+    max_weight = 0
+    crash_like = 0
+    advisory_like = 0
+    git_like = 0
+    crash_weight = 0
+    advisory_weight = 0
+    git_weight = 0
+    for signal in external_signals:
+        weight = int(signal.weight)
+        total_weight += weight
+        max_weight = max(max_weight, weight)
+        source_buckets.add(signal.source)
+        if signal.source in crash_sources:
+            crash_like += 1
+            crash_weight += weight
+        elif signal.source in advisory_sources:
+            advisory_like += 1
+            advisory_weight += weight
+        elif signal.source in git_sources:
+            git_like += 1
+            git_weight += weight
+    return {
+        'source_count': len(source_buckets),
+        'total_weight': total_weight,
+        'max_weight': max_weight,
+        'crash_like': crash_like,
+        'advisory_like': advisory_like,
+        'git_like': git_like,
+        'crash_weight': crash_weight,
+        'advisory_weight': advisory_weight,
+        'git_weight': git_weight,
+    }
 
 
 def _detect_repo_context(repo_root: Path, active_languages: set[str], framework_hints: set[str]) -> dict:
@@ -361,22 +506,27 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
             path_signals.append(needle)
             reasons.append(f'path:{needle} (+{weight}) {rationale}')
 
+    hot_path_hits = 0
     for hot_path in hot_paths:
-        token = hot_path.strip('/').lower()
-        if token and token in lowered_path:
+        if hot_path and _matches_path_pattern(lowered_path, hot_path):
             score += 8
+            hot_path_hits += 1
             reasons.append(f'policy_hot_path:{hot_path} (+8) explicitly prioritized by policy')
 
+    entrypoint_hits = 0
     for entry in policy_entrypoints:
         token = entry.strip('/').lower()
         if token and token in lowered_path:
             score += 7
+            entrypoint_hits += 1
             reasons.append(f'policy_entrypoint:{entry} (+7) policy-declared attack surface')
 
+    focus_hits = 0
     for term in focus_terms:
         token = term.lower()
         if token and token in lowered_path:
             score += 4
+            focus_hits += 1
             reasons.append(f'policy_focus:{term} (+4) policy-declared focus area')
 
     compiled_patterns = [(name, re.compile(pattern), weight, rationale) for name, pattern, weight, rationale in [*rules['patterns'], *GLOBAL_PATTERNS]]
@@ -447,8 +597,22 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
             score += 5
             reasons.append(f'policy_preferred_sink:{sink} (+5) aligns with policy-requested sink class')
 
+    retention_reason = _retention_reason(
+        score=score,
+        signals=signals,
+        external_signals=external_signals,
+        hot_path_hits=hot_path_hits,
+        entrypoint_hits=entrypoint_hits,
+        focus_hits=focus_hits,
+        in_degree=in_degree,
+        out_degree=out_degree,
+        semantic_meta=semantic_meta,
+    )
     if score < 10 and len(signals) < 2:
-        return None
+        if not retention_reason:
+            return None
+        score = max(score, 10)
+        reasons.append(f'retention_exemption: {retention_reason}')
 
     signals.sort(key=lambda item: (-item.weight, item.line_no))
     trimmed_signals = signals[:max_signals_per_file]
@@ -478,7 +642,15 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
                     sink_kinds.add('outbound request')
 
     subsystem = rel_path.split('/', 1)[0]
-    exposure = _infer_exposure(rel_path, trimmed_signals, attack_surfaces, sink_kinds)
+    exposure = _infer_exposure(
+        rel_path,
+        language=language,
+        signals=trimmed_signals,
+        attack_surfaces=attack_surfaces,
+        sink_kinds=sink_kinds,
+        external_signals=external_signals,
+        framework_hints=framework_hints,
+    )
     return Candidate(
         path=file_path,
         language=language,
@@ -498,18 +670,43 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
     )
 
 
-def _infer_exposure(rel_path: str, signals: list[Signal], attack_surfaces: set[str], sink_kinds: set[str]) -> str:
+def _infer_exposure(rel_path: str, *, language: str, signals: list[Signal], attack_surfaces: set[str], sink_kinds: set[str], external_signals: list[ExternalSignal], framework_hints: set[str]) -> str:
     lowered = rel_path.lower()
     if 'request entrypoint' in attack_surfaces:
         return 'remote API'
     if 'authorization boundary' in attack_surfaces or any(token in lowered for token in ('/auth', '/session', '/token')):
         return 'auth boundary'
-    if 'file ingestion' in attack_surfaces or any(token in lowered for token in ('/upload', '/import', '/archive', '/parser')):
-        return 'file or parser boundary'
+    if any(token in lowered for token in ('tls', 'ssl', 'x509', 'certificate', 'spiffe', 'trust', 'root_store', 'handshake', 'credentials')):
+        return 'trust-material or handshake path'
+    if any(token in lowered for token in ('xds', 'bootstrap', 'resolver', 'discovery', 'lb_policy')):
+        return 'control-plane or resolver path'
+    if 'file ingestion' in attack_surfaces or any(token in lowered for token in ('/upload', '/import', '/archive')):
+        return 'file ingestion path'
+    if any(token in lowered for token in ('python/', 'php/', 'ruby/', 'bindings/', 'extension', 'swig', '/ffi', 'cffi')):
+        return 'language binding or FFI path'
+    if any(token in lowered for token in ('/parser', 'parse', 'codec', 'decode', 'encoder', 'marshal', 'unmarshal', 'serialize', 'deserialize', 'proto')):
+        return 'parser or serialization path'
+    if any(token in lowered for token in ('transport', 'http2', 'hpack', 'frame', 'socket', 'endpoint', 'channel', 'server', 'client', 'subchannel', 'iomgr')):
+        return 'transport or protocol state machine'
+    if any(token in lowered for token in ('alloc', 'arena', 'buffer', 'memory', 'slice', 'arena', 'pool')):
+        return 'allocator or buffer-management path'
     if 'command execution' in sink_kinds:
         return 'command execution path'
+    if 'unsafe deserialization' in sink_kinds:
+        return 'unsafe deserialization path'
+    if 'filesystem' in sink_kinds:
+        return 'filesystem trust-boundary path'
+    if 'outbound request' in sink_kinds:
+        return 'outbound network path'
     if 'memory-sensitive native path' in sink_kinds:
+        if language == 'c_cpp':
+            profile = _external_signal_profile(external_signals)
+            if profile['crash_like']:
+                return 'memory-corruption-prone native path'
+            return 'native memory-lifetime path'
         return 'memory-sensitive path'
+    if any(hint in {'fastapi', 'django', 'flask', 'express', 'nestjs', 'spring', 'gin', 'echo', 'actix', 'axum', 'rails', 'laravel'} for hint in framework_hints):
+        return 'framework entry or middleware path'
     if signals:
         return signals[0].name
     return Path(rel_path).stem
