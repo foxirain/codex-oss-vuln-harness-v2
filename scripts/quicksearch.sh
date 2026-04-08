@@ -124,8 +124,6 @@ python3 -m oss_harness bootstrap "$REPO_PATH" "${COMMON_ARGS[@]}"
 printf '[2/3] scan\n'
 SCAN_ARGS=(
   "$REPO_PATH"
-  --policy "$POLICY_PATH"
-  --signals-json "$SIGNALS_PATH"
   --out "$OUT_DIR"
 )
 if [[ -n "$SBOM_PATH" ]]; then

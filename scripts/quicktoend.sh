@@ -25,6 +25,7 @@ Options:
   --tier-min TIER          Minimum review tier for repro/report. Default: A
   --model MODEL            Optional Codex model override
   --sandbox MODE           Codex sandbox mode. Default: workspace-write
+  --sbom PATH              Optional SBOM JSON passed to scan for component-aware enrichment
   --no-include-snippet     Do not pass --include-snippet to autopilot
   --unsafe-bypass          Pass --dangerously-bypass-approvals-and-sandbox
   -h, --help               Show help
@@ -160,8 +161,6 @@ python3 -m oss_harness bootstrap "$REPO_PATH" "${COMMON_ARGS[@]}"
 printf '[2/6] scan\n'
 SCAN_ARGS=(
   "$REPO_PATH"
-  --policy "$POLICY_PATH"
-  --signals-json "$SIGNALS_PATH"
   --out "$OUT_DIR"
 )
 if [[ -n "$SBOM_PATH" ]]; then
