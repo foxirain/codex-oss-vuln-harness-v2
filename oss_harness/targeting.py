@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 
 from oss_harness.external import load_crash_signal_index, load_external_signal_index
+from oss_harness.sbom import load_sbom_signal_index
 from oss_harness.graph import build_import_graph
 from oss_harness.history import collect_git_history_signals
 from oss_harness.models import Candidate, ExternalSignal, LanguageStat, Signal
@@ -182,7 +183,7 @@ def load_json_config(path: Path | None) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict | None = None, external_signal_path: Path | None = None, crash_dir: Path | None = None) -> tuple[list[Candidate], list[LanguageStat]]:
+def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict | None = None, external_signal_path: Path | None = None, crash_dir: Path | None = None, sbom_path: Path | None = None) -> tuple[list[Candidate], list[LanguageStat]]:
     config = config or {}
     language_override = policy_list(policy, 'languages')
     detected_languages = _detect_languages(repo_root)
@@ -202,6 +203,7 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
     external_index = load_external_signal_index(external_signal_path)
     crash_index = load_crash_signal_index(repo_root, crash_dir)
     git_index = collect_git_history_signals(repo_root)
+    sbom_index = load_sbom_signal_index(repo_root, sbom_path)
     for file_path in repo_root.rglob('*'):
         if not file_path.is_file():
             continue
@@ -235,6 +237,7 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
             git_index=git_index,
             external_index=external_index,
             crash_index=crash_index,
+            sbom_index=sbom_index,
             policy_entrypoints=policy_entrypoints,
             focus_terms=focus_terms,
             hot_paths=hot_paths,
@@ -460,7 +463,7 @@ def _detect_repo_context(repo_root: Path, active_languages: set[str], framework_
     return {'frameworks': sorted(frameworks), 'repo_signals': repo_signals}
 
 
-def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: str, repo_context: dict, graph_index: dict[str, dict[str, object]], semantic_index: dict[str, object], git_index: dict[str, list[ExternalSignal]], external_index: dict[str, list[ExternalSignal]], crash_index: dict[str, list[ExternalSignal]], policy_entrypoints: list[str], focus_terms: list[str], hot_paths: list[str], preferred_sinks: list[str], max_signals_per_file: int) -> Candidate | None:
+def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: str, repo_context: dict, graph_index: dict[str, dict[str, object]], semantic_index: dict[str, object], git_index: dict[str, list[ExternalSignal]], external_index: dict[str, list[ExternalSignal]], crash_index: dict[str, list[ExternalSignal]], sbom_index: dict[str, list[ExternalSignal]], policy_entrypoints: list[str], focus_terms: list[str], hot_paths: list[str], preferred_sinks: list[str], max_signals_per_file: int) -> Candidate | None:
     try:
         content = file_path.read_text(encoding='utf-8', errors='ignore')
     except OSError:
@@ -496,6 +499,10 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
         score += signal.weight
         reasons.append(f'external:{signal.source} (+{signal.weight}) {signal.summary}')
     for signal in crash_index.get(rel_path, []):
+        external_signals.append(signal)
+        score += signal.weight
+        reasons.append(f'external:{signal.source} (+{signal.weight}) {signal.summary}')
+    for signal in sbom_index.get(rel_path, []):
         external_signals.append(signal)
         score += signal.weight
         reasons.append(f'external:{signal.source} (+{signal.weight}) {signal.summary}')

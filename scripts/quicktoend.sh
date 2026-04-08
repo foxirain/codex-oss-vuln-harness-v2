@@ -51,6 +51,7 @@ REPORT_TIMEOUT="20m"
 TIER_MIN="A"
 MODEL=""
 SANDBOX="workspace-write"
+SBOM_PATH=""
 INCLUDE_SNIPPET=1
 UNSAFE_BYPASS=0
 
@@ -98,6 +99,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sandbox)
       SANDBOX="$2"
+      shift 2
+      ;;
+    --sbom)
+      SBOM_PATH="$2"
       shift 2
       ;;
     --no-include-snippet)
@@ -153,12 +158,16 @@ cd "$HARNESS_ROOT"
 python3 -m oss_harness bootstrap "$REPO_PATH" "${COMMON_ARGS[@]}"
 
 printf '[2/6] scan\n'
-SCAN_OUTPUT="$({
-  python3 -m oss_harness scan "$REPO_PATH" \
-    --policy "$POLICY_PATH" \
-    --signals-json "$SIGNALS_PATH" \
-    --out "$OUT_DIR"
-})"
+SCAN_ARGS=(
+  "$REPO_PATH"
+  --policy "$POLICY_PATH"
+  --signals-json "$SIGNALS_PATH"
+  --out "$OUT_DIR"
+)
+if [[ -n "$SBOM_PATH" ]]; then
+  SCAN_ARGS+=(--sbom "$SBOM_PATH")
+fi
+SCAN_OUTPUT="$(python3 -m oss_harness scan "${SCAN_ARGS[@]}")"
 printf '%s\n' "$SCAN_OUTPUT"
 
 SESSION_DIR="$(printf '%s\n' "$SCAN_OUTPUT" | awk -F= '/^session=/{print $2; exit}')"

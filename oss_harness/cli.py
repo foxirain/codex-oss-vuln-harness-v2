@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument('--config', type=Path, help='Optional JSON config for include paths or signal caps.')
     scan_parser.add_argument('--signals-json', type=Path, help='Optional local JSON containing crash, advisory, or external file signals.')
     scan_parser.add_argument('--crash-dir', type=Path, help='Optional directory of sanitizer, panic, or crash logs to map back into repo files.')
+    scan_parser.add_argument('--sbom', type=Path, help='Optional CycloneDX/SPDX/Syft-style SBOM JSON used for component-aware candidate enrichment.')
     scan_parser.add_argument('--out', type=Path, default=Path('artifacts'), help='Directory where session artifacts will be written.')
     scan_parser.add_argument('--limit', type=int, default=120, help='Maximum number of ranked candidates to retain.')
     scan_parser.add_argument('--top', type=int, default=30, help='How many prompt bundles to generate.')
@@ -217,7 +218,7 @@ def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     policy_path = Path(args.policy).expanduser().resolve() if args.policy else find_default_policy(repo_root)
     config = load_json_config(Path(args.config).expanduser().resolve()) if args.config else {}
     policy = load_policy(policy_path)
-    candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=(Path(args.signals_json).expanduser().resolve() if args.signals_json else None), crash_dir=(Path(args.crash_dir).expanduser().resolve() if args.crash_dir else None))
+    candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=(Path(args.signals_json).expanduser().resolve() if args.signals_json else None), crash_dir=(Path(args.crash_dir).expanduser().resolve() if args.crash_dir else None), sbom_path=(Path(args.sbom).expanduser().resolve() if args.sbom else None))
     timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
     session_dir = args.out / f'session-{timestamp}'
     write_session_bundle(repo_root=repo_root, out_dir=session_dir, candidates=candidates, top_n=args.top, policy=policy, language_stats=language_stats)
@@ -226,6 +227,7 @@ def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     print(f"policy={policy_path or ''}")
     print(f"signals_json={Path(args.signals_json).expanduser().resolve() if args.signals_json else ''}")
     print(f"crash_dir={Path(args.crash_dir).expanduser().resolve() if args.crash_dir else ''}")
+    print(f"sbom={Path(args.sbom).expanduser().resolve() if args.sbom else ''}")
     print(f'candidates={len(candidates)}')
     print(f'top_prompts={min(args.top, len(candidates))}')
     print(f'fixed_response_file={response_path(session_dir)}')
