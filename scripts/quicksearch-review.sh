@@ -4,17 +4,19 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  quicksearch.sh REPO_PATH [options]
+  quicksearch-review.sh REPO_PATH [options]
 
 Runs:
   1. bootstrap
   2. scan
   3. autopilot
+  4. review
 
 Options:
   --out DIR                 Output artifact root. Default: /tmp/oss-artifacts
   --duration SPEC           Autopilot total duration. Default: 2h
   --per-run-timeout SPEC    Autopilot per-run timeout. Default: 30m
+  --review-timeout SPEC     Review timeout per finding. Default: 20m
   --top N                   Number of prompt bundles to generate in scan. Default: 30
   --model MODEL             Optional Codex model override
   --sandbox MODE            Codex sandbox mode. Default: workspace-write
@@ -24,8 +26,7 @@ Options:
   -h, --help                Show help
 
 Examples:
-  quicksearch.sh /work/grpc
-  quicksearch.sh /work/grpc --out /tmp/grpc-artifacts --duration 4h --top 50
+  quicksearch-review.sh /work/grpc --duration 4h --top 50
 USAGE
 }
 
@@ -38,6 +39,7 @@ REPO_PATH=""
 OUT_DIR="/tmp/oss-artifacts"
 DURATION="2h"
 PER_RUN_TIMEOUT="30m"
+REVIEW_TIMEOUT="20m"
 TOP="30"
 MODEL=""
 SANDBOX="workspace-write"
@@ -61,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --per-run-timeout)
       PER_RUN_TIMEOUT="$2"
+      shift 2
+      ;;
+    --review-timeout)
+      REVIEW_TIMEOUT="$2"
       shift 2
       ;;
     --top)
@@ -123,11 +129,11 @@ if [[ "$UNSAFE_BYPASS" -eq 1 ]]; then
   COMMON_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
 fi
 
-printf '[1/3] bootstrap: %s\n' "$REPO_PATH"
+printf '[1/4] bootstrap: %s\n' "$REPO_PATH"
 cd "$HARNESS_ROOT"
 python3 -m oss_harness bootstrap "$REPO_PATH" "${COMMON_ARGS[@]}"
 
-printf '[2/3] scan\n'
+printf '[2/4] scan\n'
 SCAN_ARGS=(
   "$REPO_PATH"
   --out "$OUT_DIR"
@@ -155,10 +161,16 @@ if [[ "$INCLUDE_SNIPPET" -eq 1 ]]; then
   AUTOPILOT_ARGS+=(--include-snippet)
 fi
 
-printf '[3/3] autopilot: %s\n' "$SESSION_DIR"
+printf '[3/4] autopilot: %s\n' "$SESSION_DIR"
 python3 -m oss_harness autopilot "${AUTOPILOT_ARGS[@]}"
+
+printf '[4/4] review\n'
+python3 -m oss_harness review "$SESSION_DIR" \
+  --timeout "$REVIEW_TIMEOUT" \
+  "${COMMON_ARGS[@]}"
 
 printf '\nDone.\n'
 printf 'policy=%s\n' "$POLICY_PATH"
 printf 'signals=%s\n' "$SIGNALS_PATH"
 printf 'session=%s\n' "$SESSION_DIR"
+printf 'review_dir=%s\n' "$SESSION_DIR/review"

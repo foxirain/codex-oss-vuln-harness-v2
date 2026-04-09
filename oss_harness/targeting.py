@@ -298,7 +298,7 @@ def _normalize_prefixes(*groups: list[str]) -> list[str]:
         for item in group:
             normalized = item.strip().strip('`').strip()
             if normalized:
-                prefixes.append(normalized.strip('/').replace('\\', '/'))
+                prefixes.append(normalized.replace('\\', '/'))
     return prefixes
 
 

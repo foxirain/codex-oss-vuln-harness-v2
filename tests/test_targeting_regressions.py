@@ -15,6 +15,7 @@ from oss_harness.targeting import (
     _select_languages,
     _should_skip_path,
     _weighted_signal_value,
+    _normalize_prefixes,
 )
 
 
@@ -45,6 +46,13 @@ class TargetingRegressionTests(unittest.TestCase):
         canonical = _canonicalize_policy_paths(repo_root, ['/work/leveldb/db/db_impl.cc', 'table/format.cc'])
         self.assertEqual(canonical, ['db/db_impl.cc', 'table/format.cc'])
         self.assertFalse(_should_skip_path('db/db_impl.cc', canonical, [], []))
+
+    def test_absolute_policy_paths_survive_normalization(self) -> None:
+        repo_root = Path('/work/openthread')
+        normalized = _normalize_prefixes(['/work/openthread/src/core/thread', 'src/core/net'])
+        canonical = _canonicalize_policy_paths(repo_root, normalized)
+        self.assertEqual(canonical, ['src/core/thread', 'src/core/net'])
+        self.assertFalse(_should_skip_path('src/core/thread/mesh_forwarder.cpp', canonical, [], []))
 
     def test_strong_external_signal_gets_retention_exemption(self) -> None:
         external = [ExternalSignal(source='advisory', weight=8, summary='recent CVE-adjacent fix', metadata={})]
