@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from oss_harness.ingest import parse_response
+from oss_harness.prompting import should_attach_snippet
 from oss_harness.session import completed_ranks, load_state, record_review, response_archive_dir, response_path, save_state, set_pending_review
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -65,7 +66,10 @@ def run_autopilot(session_dir: Path, *, include_snippet: bool, duration_spec: st
         stderr_path = exec_dir / f'run-{run_index:04d}.stderr.txt'
         prompt_text = _build_autopilot_prompt(next_prompt)
         prompt_path.write_text(prompt_text, encoding='utf-8')
-        _append_text(progress_path, f"\n== RUN {run_index:04d} {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')} ==\nrank={next_prompt['rank']}\ntarget={next_prompt['target']}\nprompt_source={next_prompt['prompt_source']}\nfixed_response_file={response_path(session_dir)}\n")
+        snippet_bytes = 0
+        if next_prompt.get('include_snippet') and next_prompt.get('snippet_path') and Path(next_prompt['snippet_path']).exists():
+            snippet_bytes = len(Path(next_prompt['snippet_path']).read_text(encoding='utf-8').encode('utf-8'))
+        _append_text(progress_path, f"\n== RUN {run_index:04d} {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')} ==\nrank={next_prompt['rank']}\ntarget={next_prompt['target']}\nprompt_source={next_prompt['prompt_source']}\nprompt_profile={next_prompt.get('prompt_profile', '')}\nsnippet_attached={int(bool(next_prompt.get('include_snippet')))}\nprompt_bytes={len(prompt_text.encode('utf-8'))}\nsnippet_bytes={snippet_bytes}\nfixed_response_file={response_path(session_dir)}\n")
         _write_status(status_path, stage='running', session_dir=session_dir, repo_root=manifest.get('repo_root', ''), started_at=started_at, duration_spec=duration_spec, runs=run_index, current_target=next_prompt['target'], current_rank=next_prompt['rank'], target_attempts=_target_attempts(load_state(session_dir), next_prompt['target']), subsystem_stalls=len(_stalled_subsystems(load_state(session_dir), manifest)))
 
         proc = _run_codex_exec(repo_root=next_prompt['repo_root'], prompt_text=prompt_text, response_file=response_path(session_dir), stdout_path=stdout_path, stderr_path=stderr_path, timeout_seconds=max(1, min(int(remaining), per_run_timeout_seconds)), model=model, sandbox=sandbox, full_auto=full_auto, unsafe_bypass=unsafe_bypass)
@@ -169,7 +173,9 @@ def _render_next_prompt(session_dir: Path, *, include_snippet: bool) -> dict:
         raise SystemExit(f'missing prompt bundle for rank {rank}: {prompt_path}. Rerun oss-harness scan for this repository and use the new session directory.')
     prompt = prompt_path.read_text(encoding='utf-8')
     set_pending_review(session_dir, rank, candidate['path'], str(prompt_path))
-    return {'repo_root': manifest['repo_root'], 'prompt': prompt, 'prompt_source': prompt_path, 'snippet_path': snippet_path, 'include_snippet': include_snippet, 'target': candidate['path'], 'rank': rank}
+    target_attempts = _target_attempts(state, candidate['path'])
+    snippet_enabled = should_attach_snippet(candidate, requested=include_snippet, attempt=target_attempts)
+    return {'repo_root': manifest['repo_root'], 'prompt': prompt, 'prompt_source': prompt_path, 'snippet_path': snippet_path, 'include_snippet': snippet_enabled, 'target': candidate['path'], 'rank': rank, 'prompt_profile': candidate.get('prompt_profile', '')}
 
 
 def _build_autopilot_prompt(rendered: dict) -> str:

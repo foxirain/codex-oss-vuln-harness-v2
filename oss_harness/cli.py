@@ -10,6 +10,7 @@ from pathlib import Path
 from oss_harness.autopilot import run_autopilot
 from oss_harness.automation import run_bootstrap
 from oss_harness.bundle import write_session_bundle
+from oss_harness.dual import write_dual_session_bundle
 from oss_harness.findings import list_finding_files, select_finding_files
 from oss_harness.ingest import load_response, parse_response
 from oss_harness.policy import find_default_policy, load_policy, write_policy_template
@@ -20,7 +21,7 @@ from oss_harness.session import completed_ranks, load_state, record_review, resp
 from oss_harness.targeting import discover_candidates, load_json_config
 
 SUBCOMMANDS = {
-    'scan', 'inspect', 'codex', 'next', 'record', 'ingest', 'loop', 'status', 'autopilot', 'init-policy',
+    'scan', 'scan-dual', 'inspect', 'codex', 'next', 'record', 'ingest', 'loop', 'status', 'autopilot', 'init-policy',
     'bootstrap', 'review', 'repro', 'report',
 }
 VERDICTS = ['cve_candidate', 'plausible_security_bug', 'latent_bug', 'not_cve_candidate', 'needs_more_context']
@@ -52,6 +53,17 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument('--out', type=Path, default=Path('artifacts'), help='Directory where session artifacts will be written.')
     scan_parser.add_argument('--limit', type=int, default=120, help='Maximum number of ranked candidates to retain.')
     scan_parser.add_argument('--top', type=int, default=30, help='How many prompt bundles to generate.')
+
+    scan_dual_parser = subparsers.add_parser('scan-dual', help='Run blind and signal-aware scans, then build a merged session from top N of each.')
+    scan_dual_parser.add_argument('repo_root', help='Path to the repository to analyze.')
+    scan_dual_parser.add_argument('--policy', type=Path, help='Markdown policy file defining scope and exclusions. If omitted, the harness auto-detects a default policy file.')
+    scan_dual_parser.add_argument('--config', type=Path, help='Optional JSON config for include paths or signal caps.')
+    scan_dual_parser.add_argument('--signals-json', type=Path, help='Optional local JSON containing crash, advisory, or external file signals. If omitted, the harness auto-detects likely signal files.')
+    scan_dual_parser.add_argument('--crash-dir', type=Path, help='Optional directory of sanitizer, panic, or crash logs to map back into repo files. If omitted, the harness auto-detects likely crash directories.')
+    scan_dual_parser.add_argument('--sbom', type=Path, help='Optional CycloneDX/SPDX/Syft-style SBOM JSON used for component-aware candidate enrichment. If omitted, the harness auto-detects likely SBOM files.')
+    scan_dual_parser.add_argument('--out', type=Path, default=Path('artifacts'), help='Directory where session artifacts will be written.')
+    scan_dual_parser.add_argument('--limit', type=int, default=120, help='Maximum number of ranked candidates to retain in each source session.')
+    scan_dual_parser.add_argument('--top', type=int, default=10, help='How many top candidates to take from each source session into the merged session.')
 
     inspect_parser = subparsers.add_parser('inspect', help='Print a ranked summary from a generated session.')
     inspect_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
@@ -147,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_bootstrap(parser, args)
     if args.command == 'scan':
         return _run_scan(parser, args)
+    if args.command == 'scan-dual':
+        return _run_scan_dual(parser, args)
     if args.command == 'inspect':
         return _run_inspect(args)
     if args.command == 'codex':
@@ -210,17 +224,7 @@ def _run_bootstrap(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
 
 def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
-    repo_root = Path(args.repo_root).expanduser().resolve()
-    if not repo_root.exists():
-        parser.error(f'repository does not exist: {repo_root}')
-    if not repo_root.is_dir():
-        parser.error(f'repository is not a directory: {repo_root}')
-    policy_path = Path(args.policy).expanduser().resolve() if args.policy else find_default_policy(repo_root)
-    signals_json_path = Path(args.signals_json).expanduser().resolve() if args.signals_json else _find_default_signals_json(repo_root)
-    crash_dir = Path(args.crash_dir).expanduser().resolve() if args.crash_dir else _find_default_crash_dir(repo_root)
-    sbom_path = Path(args.sbom).expanduser().resolve() if args.sbom else _find_default_sbom(repo_root)
-    config = load_json_config(Path(args.config).expanduser().resolve()) if args.config else {}
-    policy = load_policy(policy_path)
+    repo_root, policy_path, signals_json_path, crash_dir, sbom_path, config, policy = _resolve_scan_inputs(parser, args)
     candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=signals_json_path, crash_dir=crash_dir, sbom_path=sbom_path)
     timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
     session_dir = args.out / f'session-{timestamp}'
@@ -238,6 +242,56 @@ def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
 
 
 
+def _run_scan_dual(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    repo_root, policy_path, signals_json_path, crash_dir, sbom_path, config, policy = _resolve_scan_inputs(parser, args)
+    blind_candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=None, crash_dir=None, sbom_path=None)
+    signal_candidates, _ = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=signals_json_path, crash_dir=crash_dir, sbom_path=sbom_path)
+    timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+    session_root = args.out / f'dual-session-{timestamp}'
+    result = write_dual_session_bundle(
+        repo_root=repo_root,
+        out_dir=session_root,
+        blind_candidates=blind_candidates,
+        signal_candidates=signal_candidates,
+        per_side_top=args.top,
+        policy=policy,
+        language_stats=language_stats,
+    )
+    print(f"session_root={result['session_root']}")
+    print(f"merged_session={result['merged_session']}")
+    print(f"blind_session={result['blind_session']}")
+    print(f"signal_session={result['signal_session']}")
+    print(f'repo_root={repo_root}')
+    print(f"policy={policy_path or ''}")
+    print(f"signals_json={signals_json_path or ''}")
+    print(f"crash_dir={crash_dir or ''}")
+    print(f"sbom={sbom_path or ''}")
+    print(f'blind_candidates={len(blind_candidates)}')
+    print(f'signal_candidates={len(signal_candidates)}')
+    merged_manifest = _load_manifest(result['merged_session'])
+    print(f"merged_candidates={merged_manifest.get('candidate_count', 0)}")
+    print(f"merged_top_prompts={min(args.top * 2, merged_manifest.get('candidate_count', 0))}")
+    print(f"fixed_response_file={response_path(result['merged_session'])}")
+    return 0
+
+
+
+def _resolve_scan_inputs(parser: argparse.ArgumentParser, args: argparse.Namespace) -> tuple[Path, Path | None, Path | None, Path | None, Path | None, dict, dict]:
+    repo_root = Path(args.repo_root).expanduser().resolve()
+    if not repo_root.exists():
+        parser.error(f'repository does not exist: {repo_root}')
+    if not repo_root.is_dir():
+        parser.error(f'repository is not a directory: {repo_root}')
+    policy_path = Path(args.policy).expanduser().resolve() if args.policy else find_default_policy(repo_root)
+    signals_json_path = Path(args.signals_json).expanduser().resolve() if args.signals_json else _find_default_signals_json(repo_root)
+    crash_dir = Path(args.crash_dir).expanduser().resolve() if args.crash_dir else _find_default_crash_dir(repo_root)
+    sbom_path = Path(args.sbom).expanduser().resolve() if args.sbom else _find_default_sbom(repo_root)
+    config = load_json_config(Path(args.config).expanduser().resolve()) if args.config else {}
+    policy = load_policy(policy_path)
+    return repo_root, policy_path, signals_json_path, crash_dir, sbom_path, config, policy
+
+
+
 def _run_inspect(args: argparse.Namespace) -> int:
     manifest = _load_manifest(args.session_dir)
     candidates = manifest.get('candidates', [])
@@ -250,7 +304,9 @@ def _run_inspect(args: argparse.Namespace) -> int:
         surfaces = ', '.join(candidate.get('attack_surfaces', [])[:2]) or 'none'
         sinks = ', '.join(candidate.get('sink_kinds', [])[:2]) or 'none'
         symbols = ', '.join(symbol.get('name', '') for symbol in candidate.get('primary_symbols', [])[:2] if symbol.get('name')) or 'none'
-        print(f"{rank:02d} score={candidate['score']:>3} lang={candidate['language']:<10} exposure={candidate['exposure']:<22} surfaces={surfaces:<24} sinks={sinks:<24} symbols={symbols:<20} path={candidate['path']}")
+        profile = candidate.get('prompt_profile', '')
+        sources = ','.join(candidate.get('dual_sources', [])) or '-'
+        print(f"{rank:02d} score={candidate['score']:>3} lang={candidate['language']:<10} profile={profile:<8} sources={sources:<12} exposure={candidate['exposure']:<22} surfaces={surfaces:<24} sinks={sinks:<24} symbols={symbols:<20} path={candidate['path']}")
     return 0
 
 
