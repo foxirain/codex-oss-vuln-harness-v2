@@ -9,8 +9,10 @@ from pathlib import Path
 
 from oss_harness.autopilot import run_autopilot
 from oss_harness.automation import run_bootstrap
+from oss_harness.benchmark import run_benchmark_modes
 from oss_harness.bundle import write_session_bundle
 from oss_harness.dual import write_dual_session_bundle
+from oss_harness.evaluation import run_eval_corpus
 from oss_harness.findings import list_finding_files, select_finding_files
 from oss_harness.ingest import load_response, parse_response
 from oss_harness.policy import find_default_policy, load_policy, write_policy_template
@@ -22,7 +24,7 @@ from oss_harness.targeting import discover_candidates, load_json_config
 
 SUBCOMMANDS = {
     'scan', 'scan-dual', 'inspect', 'codex', 'next', 'record', 'ingest', 'loop', 'status', 'autopilot', 'init-policy',
-    'bootstrap', 'review', 'repro', 'report',
+    'bootstrap', 'review', 'repro', 'report', 'eval-corpus', 'benchmark-modes',
 }
 VERDICTS = ['cve_candidate', 'plausible_security_bug', 'latent_bug', 'not_cve_candidate', 'needs_more_context']
 MAX_MANUAL_FOLLOWUPS = 2
@@ -123,6 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument('--template', required=True, help='Template file path or free-form format instruction.')
     _add_codex_task_args(report_parser, timeout_default='20m')
 
+
+
+    benchmark_parser = subparsers.add_parser('benchmark-modes', help='Benchmark blind, signal, and dual scan quality across a corpus of repositories.')
+    benchmark_parser.add_argument('corpus', type=Path, help='Path to a benchmark corpus JSON file describing repository roots and optional labels.')
+
+    eval_parser = subparsers.add_parser('eval-corpus', help='Evaluate ranking and promotion quality against a known corpus JSON.')
+    eval_parser.add_argument('corpus', type=Path, help='Path to a corpus JSON file describing expected good and bad paths per session.')
+
     autopilot_parser = subparsers.add_parser('autopilot', help='Run Codex non-interactively for a fixed time budget.')
     autopilot_parser.add_argument('session_dir', type=Path, help='Path to a generated session directory.')
     autopilot_parser.add_argument('--duration', default='1h', help='Total autopilot budget. Example: 30m, 1h.')
@@ -183,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_report(args)
     if args.command == 'autopilot':
         return _run_autopilot(args)
+    if args.command == 'eval-corpus':
+        return _run_eval_corpus(args)
+    if args.command == 'benchmark-modes':
+        return _run_benchmark_modes(args)
     parser.error(f'unknown command: {args.command}')
     return 2
 
@@ -470,6 +484,20 @@ def _load_manifest(session_dir: Path) -> dict:
     with manifest_path.open('r', encoding='utf-8') as handle:
         return json.load(handle)
 
+
+
+
+
+def _run_benchmark_modes(args: argparse.Namespace) -> int:
+    result = run_benchmark_modes(Path(args.corpus).expanduser().resolve())
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _run_eval_corpus(args: argparse.Namespace) -> int:
+    result = run_eval_corpus(Path(args.corpus).expanduser().resolve())
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 def _find_default_signals_json(repo_root: Path) -> Path | None:

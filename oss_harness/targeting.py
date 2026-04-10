@@ -13,6 +13,7 @@ from oss_harness.history import collect_git_history_signals
 from oss_harness.models import Candidate, ExternalSignal, LanguageStat, Signal
 from oss_harness.semantic import build_semantic_index
 from oss_harness.policy import policy_list
+from oss_harness.taxonomy import build_entrypoint_categories, match_policy_item
 
 COMMON_EXCLUDE_DIRS = {
     '.git', '.github', '.venv', '.next', '.nuxt', '.tox', '.mypy_cache', '.pytest_cache',
@@ -107,13 +108,13 @@ LANGUAGE_RULES = {
     },
     'c_cpp': {
         'extensions': {'.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.hh'},
-        'path_rules': [('/http', 8, 'network-facing module'), ('/server', 8, 'server-facing module'), ('/parser', 9, 'parser boundary'), ('/proto', 7, 'protocol boundary'), ('/auth', 8, 'authentication boundary')],
+        'path_rules': [('/http', 7, 'network-facing module'), ('/server', 7, 'server-facing module'), ('/parser', 8, 'parser boundary'), ('/proto', 6, 'protocol boundary'), ('/auth', 7, 'authentication boundary')],
         'patterns': [
-            ('network_input', r'\b(recv|recvfrom|read|accept|SSL_read|uv_read_start)\b', 8, 'external input boundary'),
-            ('dangerous_copy', r'\b(strcpy|strcat|sprintf|vsprintf|gets|memcpy|memmove|snprintf)\b', 9, 'buffer movement or formatting sink'),
-            ('command_exec', r'\b(system|popen|execl|execve|CreateProcess[A-Z]?)\b', 10, 'command execution sink'),
-            ('alloc_free', r'\b(malloc|calloc|realloc|free|new\s|delete\s)\b', 6, 'memory lifetime surface'),
-            ('unsafe_cast', r'\([^\)]*\*\)\s*[A-Za-z_]|reinterpret_cast<|static_cast<', 7, 'type or size conversion boundary'),
+            ('network_input', r'\b(recv|recvfrom|read|accept|SSL_read|uv_read_start)\b', 6, 'external input boundary'),
+            ('dangerous_copy', r'\b(strcpy|strcat|sprintf|vsprintf|gets|memcpy|memmove|snprintf)\b', 6, 'buffer movement or formatting sink'),
+            ('command_exec', r'\b(system|popen|execl|execve|CreateProcess[A-Z]?)\b', 9, 'command execution sink'),
+            ('alloc_free', r'\b(malloc|calloc|realloc|free|new\s|delete\s)\b', 2, 'memory lifetime surface'),
+            ('unsafe_cast', r'\([^\)]*\*\)\s*[A-Za-z_]|reinterpret_cast<|static_cast<', 1, 'type or size conversion boundary'),
         ],
     },
     'java': {
@@ -196,10 +197,10 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
     include_prefixes = _canonicalize_policy_paths(repo_root, _normalize_prefixes(policy_list(policy, 'include_paths'), config.get('include_paths', [])))
     exclude_prefixes = _canonicalize_policy_paths(repo_root, _normalize_prefixes(policy_list(policy, 'exclude_paths'), config.get('exclude_paths', [])))
     ignore_patterns = _canonicalize_policy_paths(repo_root, _normalize_prefixes(policy_list(policy, 'ignore_patterns')))
-    policy_entrypoints = [entry.lower() for entry in policy_list(policy, 'entry_points')]
+    policy_entrypoints = policy_list(policy, 'entry_points')
     focus_terms = [item.lower() for item in policy_list(policy, 'focus_areas')]
     hot_paths = _canonicalize_policy_paths(repo_root, [item.lower() for item in policy_list(policy, 'hot_paths')])
-    preferred_sinks = [item.lower() for item in policy_list(policy, 'preferred_sinks')]
+    preferred_sinks = policy_list(policy, 'preferred_sinks')
     framework_hints = {item.lower() for item in policy_list(policy, 'framework_hints')}
     max_signals_per_file = int(config.get('max_signals_per_file', 12))
 
@@ -344,6 +345,59 @@ def _matches_path_pattern(rel_path: str, pattern: str) -> bool:
 
 def _matches_excluded_pattern(rel_path: str) -> bool:
     return any(pattern.search(rel_path) for pattern in DEFAULT_EXCLUDED_FILE_PATTERNS)
+
+
+def _should_ignore_signal_line(language: str, name: str, line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped.startswith(('#', '//', '/*', '*')):
+        return True
+    if language != 'c_cpp':
+        return False
+    if stripped.startswith(('typedef ', 'using ', 'struct ', 'class ', 'enum ', 'template<')):
+        return True
+    if name == 'unsafe_cast' and '=' not in stripped and 'return' not in stripped and '(' not in stripped.split(')')[-1]:
+        return True
+    if name in {'alloc_free', 'dangerous_copy'} and stripped.upper() == stripped and len(stripped) < 120:
+        return True
+    return False
+
+
+def _semantic_proximity_boost(semantic_meta: object | None) -> tuple[int, list[str]]:
+    if semantic_meta is None:
+        return 0, []
+    reasons: list[str] = []
+    score = 0
+    entry_lines = list(getattr(semantic_meta, 'entrypoint_lines', []) or [])
+    request_lines = list(getattr(semantic_meta, 'request_lines', []) or [])
+    sink_lines = list(getattr(semantic_meta, 'sink_lines', []) or [])
+    if request_lines and sink_lines:
+        distance = min(abs(req - sink) for req in request_lines for sink in sink_lines)
+        if distance <= 8:
+            score += 8
+            reasons.append(f'semantic:request_sink_proximity (+8) request-like usage reaches sink-like usage within {distance} lines')
+        elif distance <= 24:
+            score += 4
+            reasons.append(f'semantic:request_sink_proximity (+4) request-like usage near sink-like usage within {distance} lines')
+    if entry_lines and sink_lines:
+        distance = min(abs(entry - sink) for entry in entry_lines for sink in sink_lines)
+        if distance <= 12:
+            score += 7
+            reasons.append(f'semantic:entry_sink_proximity (+7) entrypoint-like symbol is close to sink-like usage within {distance} lines')
+        elif distance <= 32:
+            score += 3
+            reasons.append(f'semantic:entry_sink_proximity (+3) entrypoint-like symbol is near sink-like usage within {distance} lines')
+    return score, reasons
+
+
+def _trust_boundary_alignment_boost(rel_path: str, external_signals: list[ExternalSignal]) -> tuple[int, str]:
+    lowered = rel_path.lower()
+    profile = _external_signal_profile(external_signals)
+    if any(token in lowered for token in ('tls', 'ssl', 'spiffe', 'certificate', 'x509', 'resolver', 'xds', 'bootstrap', 'transport', 'http2', 'hpack', 'frame')):
+        if profile['advisory_like'] or profile['git_like']:
+            return 5, 'trust-boundary file aligned with recent security activity'
+    return 0, ''
 
 
 def _language_for_path(file_path: Path, active_languages: set[str]) -> str:
@@ -541,12 +595,12 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
     in_degree = int(graph_meta.get('in_degree', 0))
     out_degree = int(graph_meta.get('out_degree', 0))
     if in_degree >= 2:
-        weight = min(8, 2 + in_degree)
+        weight = min(5, 1 + (in_degree // 2))
         score += weight
         external_signals.append(ExternalSignal(source='graph', weight=weight, summary=f'internal call/import fan-in: {in_degree}', metadata={'in_degree': in_degree}))
         reasons.append(f'graph:fan_in (+{weight}) imported or referenced by many internal files')
     if out_degree >= 5:
-        weight = min(5, out_degree // 2)
+        weight = min(3, max(1, out_degree // 4))
         score += weight
         external_signals.append(ExternalSignal(source='graph', weight=weight, summary=f'internal fan-out: {out_degree}', metadata={'out_degree': out_degree}))
         reasons.append(f'graph:fan_out (+{weight}) broad dependency surface')
@@ -581,12 +635,6 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
             reasons.append(f'policy_hot_path:{hot_path} (+8) explicitly prioritized by policy')
 
     entrypoint_hits = 0
-    for entry in policy_entrypoints:
-        token = entry.strip('/').lower()
-        if token and token in lowered_path:
-            score += 7
-            entrypoint_hits += 1
-            reasons.append(f'policy_entrypoint:{entry} (+7) policy-declared attack surface')
 
     focus_hits = 0
     for term in focus_terms:
@@ -613,14 +661,14 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
 
     if semantic_meta is not None:
         if semantic_meta.entrypoint_lines:
-            semantic_weight = min(10, 3 + len(semantic_meta.entrypoint_lines))
+            semantic_weight = min(8, 2 + len(semantic_meta.entrypoint_lines))
             score += semantic_weight
             reasons.append(f'semantic:entrypoints (+{semantic_weight}) function-level entrypoint evidence')
             attack_surfaces.add('request entrypoint')
-        if semantic_meta.request_lines and semantic_meta.sink_lines:
-            semantic_weight = min(9, 2 + min(len(semantic_meta.request_lines), len(semantic_meta.sink_lines)))
-            score += semantic_weight
-            reasons.append(f'semantic:flow_proximity (+{semantic_weight}) request-like usage co-located with sink-like usage')
+        proximity_weight, proximity_reasons = _semantic_proximity_boost(semantic_meta)
+        if proximity_weight:
+            score += proximity_weight
+            reasons.extend(proximity_reasons)
         if semantic_meta.summaries:
             reasons.extend(f'semantic:{summary}' for summary in semantic_meta.summaries[:3])
 
@@ -636,6 +684,8 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
                     score += 3
         for name, pattern, weight, rationale in compiled_patterns:
             if not pattern.search(line):
+                continue
+            if _should_ignore_signal_line(language, name, line):
                 continue
             effective_weight = _weighted_signal_value(weight, artifact_profile)
             signals.append(Signal(name=name, weight=effective_weight, line_no=index, line=line.strip(), rationale=rationale, language=language))
@@ -660,10 +710,36 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
             if 'ssrf' in name:
                 sink_kinds.add('outbound request')
 
+    provisional_exposure = _infer_exposure(
+        rel_path,
+        language=language,
+        signals=signals[:max_signals_per_file],
+        attack_surfaces=attack_surfaces,
+        sink_kinds=sink_kinds,
+        external_signals=external_signals,
+        framework_hints=framework_hints,
+    )
+    entrypoint_categories = build_entrypoint_categories(
+        rel_path=rel_path,
+        exposure=provisional_exposure,
+        attack_surfaces=sorted(attack_surfaces),
+        entrypoint_markers=sorted(entrypoint_markers),
+    )
+    symbol_names = [symbol.name for symbol in primary_symbols] if 'primary_symbols' in locals() else []
+    for entry in policy_entrypoints:
+        if match_policy_item(entry, rel_path=rel_path, categories=entrypoint_categories, sinks=sink_kinds, symbols=symbol_names, kind='entrypoint'):
+            score += 7
+            entrypoint_hits += 1
+            reasons.append(f'policy_entrypoint:{entry} (+7) normalized match against candidate entry surface')
     for sink in preferred_sinks:
-        if any(token in sink for token in sink_kinds) or any(token in lowered_path for token in sink.split()):
+        if match_policy_item(sink, rel_path=rel_path, categories=entrypoint_categories, sinks=sink_kinds, symbols=symbol_names, kind='sink'):
             score += 5
             reasons.append(f'policy_preferred_sink:{sink} (+5) aligns with policy-requested sink class')
+
+    trust_weight, trust_reason = _trust_boundary_alignment_boost(rel_path, external_signals)
+    if trust_weight:
+        score += trust_weight
+        reasons.append(f'trust_boundary_alignment (+{trust_weight}) {trust_reason}')
 
     if artifact_profile['score_penalty']:
         score -= int(artifact_profile['score_penalty'])

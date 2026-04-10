@@ -130,12 +130,17 @@ def _ingest_pending_response(session_dir: Path, findings_dir: Path, findings_pat
         next_target = ''
     if parsed['verdict'] in STALLING_VERDICTS and current_attempts >= MAX_SAME_TARGET_ATTEMPTS:
         next_target = ''
-    record_review(session_dir=session_dir, rank=state.get('pending_rank'), target=pending_target, verdict=parsed['verdict'], notes=parsed['notes'], next_target=next_target, next_prompt='', auto_advance=True)
+    notes = parsed['notes']
+    promotion_ready = bool(parsed.get('promotion_ready'))
+    if parsed['verdict'] in STRONG_FINDING_VERDICTS and not promotion_ready:
+        notes = f"{notes} promotion_blocked: missing structured proof fields".strip()
+    record_review(session_dir=session_dir, rank=state.get('pending_rank'), target=pending_target, verdict=parsed['verdict'], notes=notes, next_target=next_target, next_prompt='', auto_advance=True)
     archive_path = _archive_response_file(session_dir, fixed_response)
-    _append_text(progress_path, f"ingested_target={pending_target}\ningested_verdict={parsed['verdict']}\ningested_next_target={next_target}\nresponse_archive={archive_path}\n")
-    if parsed['verdict'] in STRONG_FINDING_VERDICTS:
+    _append_text(progress_path, f"ingested_target={pending_target}\ningested_verdict={parsed['verdict']}\ningested_next_target={next_target}\npromotion_ready={int(promotion_ready)}\nresponse_archive={archive_path}\n")
+    if parsed['verdict'] in STRONG_FINDING_VERDICTS and promotion_ready:
         finding_path = findings_dir / f"finding-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}.txt"
-        finding_path.write_text(text, encoding='utf-8')
+        finding_text = _render_promoted_finding(text=text, target=pending_target, parsed=parsed)
+        finding_path.write_text(finding_text, encoding='utf-8')
         _append_text(findings_path, f"\n== FINDING {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')} ==\ntarget={pending_target}\nverdict={parsed['verdict']}\ndetails={finding_path}\narchive={archive_path}\n")
     return {'target': pending_target, 'rank': state.get('pending_rank'), 'verdict': parsed['verdict'], 'next_target': next_target}
 
@@ -184,7 +189,29 @@ def _build_autopilot_prompt(rendered: dict) -> str:
         snippet = Path(rendered['snippet_path']).read_text(encoding='utf-8').rstrip()
         if snippet:
             parts.extend(['', 'Supplemental snippet from the harness:', snippet])
-    parts.extend(['', 'Final response contract:', 'Strict verdict:', '- one of: cve_candidate, plausible_security_bug, latent_bug, not_cve_candidate, needs_more_context', '', 'Single best next target:', '- <file/function>', '- use `none` if this branch should stop and the harness should move to the next ranked target', '', 'Summary:', '- 3 to 8 short lines only', '- include exact entrypoint, attacker control, sensitive sink or invariant break, and impact reasoning'])
+    parts.extend([
+        '',
+        'Final response contract:',
+        'Strict verdict:',
+        '- one of exactly: cve_candidate, plausible_security_bug, latent_bug, not_cve_candidate, needs_more_context',
+        '- use only the exact label; do not add suffixes or prose on the verdict line',
+        '',
+        'Single best next target:',
+        '- <file/function>',
+        '- use `none` if this branch should stop and the harness should move to the next ranked target',
+        '',
+        'Structured summary:',
+        '- entrypoint: <exact attacker-reachable API, parser entry, env var, config load, or file boundary>',
+        '- attacker_control: <what exact bytes, fields, metadata, config, or lifecycle input the attacker controls>',
+        '- sink: <exact sink, invariant break, verifier bypass, or lifetime failure>',
+        '- impact: <concrete security impact or `none`>',
+        '- not blocked by: <why existing checks do not stop the path, or `blocked`>',
+        '',
+        'Reasoning style:',
+        '- start by disproving the finding before supporting it',
+        '- explicitly say if this is only a header API, utility helper, or unreachable implementation detail',
+        '- if any required field is weak, use a strict negative verdict or needs_more_context',
+    ])
     return '\n'.join(parts) + '\n'
 
 
@@ -199,8 +226,33 @@ def _manual_followup_prompt(state: dict, manual_target: str, manual_prompt: str)
     if manual_prompt:
         lines.extend(['', manual_prompt.strip()])
     else:
-        lines.extend(['', 'Requirements:', '1. Confirm the exact attacker-reachable path into this target.', '2. Validate concrete attacker control, trust-boundary crossing, and security impact.', '3. If nothing concrete exists, give a strict verdict and the single best next target.'])
+        lines.extend([
+            '',
+            'Requirements:',
+            '1. Try to disprove reachability first.',
+            '2. Confirm the exact attacker-reachable path into this target.',
+            '3. Validate concrete attacker control, sink or invariant break, and security impact.',
+            '4. If this is only a header, utility helper, or blocked path, give a strict negative verdict and the single best next target.',
+        ])
     return '\n'.join(lines) + '\n'
+
+
+def _render_promoted_finding(*, text: str, target: str, parsed: dict) -> str:
+    structured = parsed.get('structured', {}) or {}
+    lines = [
+        f'target={target}',
+        f"verdict={parsed.get('verdict', '')}",
+        f"entrypoint={structured.get('entrypoint', '')}",
+        f"attacker_control={structured.get('attacker_control', '')}",
+        f"sink={structured.get('sink', '')}",
+        f"impact={structured.get('impact', '')}",
+        f"not_blocked_by={structured.get('not_blocked_by', '')}",
+        '',
+        '=== RAW RESPONSE ===',
+        text.rstrip(),
+        '',
+    ]
+    return '\n'.join(lines)
 
 
 def _next_pending_rank(state: dict, manifest: dict) -> tuple[int, dict]:

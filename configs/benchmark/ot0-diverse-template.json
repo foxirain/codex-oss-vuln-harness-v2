@@ -1,0 +1,111 @@
+{
+  "top_k": 20,
+  "limit": 150,
+  "cases": [
+    {
+      "name": "grpc",
+      "repo_url": "https://github.com/grpc/grpc.git",
+      "repo_root": "/work/bench/grpc",
+      "policy": "/work/bench/grpc/.codex-harness.md",
+      "signals_json": "/work/bench/grpc/external_signals_YYYY-MM-DD.json",
+      "sbom": "/work/bench/grpc/sbom.json",
+      "known_good": [
+        "src/core/ext/transport/chttp2/transport/hpack_parser.cc",
+        "src/core/credentials/transport/tls/ssl_utils.cc"
+      ],
+      "known_bad": [
+        "test/",
+        "examples/",
+        "third_party/"
+      ]
+    },
+    {
+      "name": "openthread",
+      "repo_url": "https://github.com/openthread/openthread.git",
+      "repo_root": "/work/bench/openthread",
+      "policy": "/work/bench/openthread/.codex-harness.md",
+      "signals_json": "/work/bench/openthread/external_signals_YYYY-MM-DD.json",
+      "known_good": [
+        "src/core/thread/mesh_forwarder.cpp",
+        "src/lib/spinel/spinel_decoder.cpp"
+      ],
+      "known_bad": [
+        "tests/",
+        "examples/",
+        "third_party/"
+      ]
+    },
+    {
+      "name": "protobuf",
+      "repo_url": "https://github.com/protocolbuffers/protobuf.git",
+      "repo_root": "/work/bench/protobuf",
+      "policy": "/work/bench/protobuf/.codex-harness.md",
+      "signals_json": "/work/bench/protobuf/external_signals_YYYY-MM-DD.json",
+      "known_good": [
+        "src/google/protobuf/io/coded_stream.cc",
+        "python/message.c",
+        "php/ext/google/protobuf/message.c"
+      ],
+      "known_bad": [
+        "upb/reflection/stage0/google/protobuf/descriptor.upb.h",
+        "src/google/protobuf/io/coded_stream_unittest.cc",
+        "ruby/ext/google/protobuf_c/ruby-upb.h"
+      ]
+    },
+    {
+      "name": "sentencepiece",
+      "repo_url": "https://github.com/google/sentencepiece.git",
+      "repo_root": "/work/bench/sentencepiece",
+      "policy": "/work/bench/sentencepiece/.codex-harness.md",
+      "known_good": [
+        "src/unigram_model.cc",
+        "python/src/sentencepiece/sentencepiece.i"
+      ],
+      "known_bad": [
+        "third_party/",
+        "test/"
+      ]
+    },
+    {
+      "name": "leveldb",
+      "repo_url": "https://github.com/google/leveldb.git",
+      "repo_root": "/work/bench/leveldb",
+      "policy": "/work/bench/leveldb/.codex-harness.md",
+      "known_good": [
+        "db/db_impl.cc",
+        "table/format.cc"
+      ],
+      "known_bad": [
+        "doc/",
+        "benchmarks/"
+      ]
+    },
+    {
+      "name": "gson",
+      "repo_url": "https://github.com/google/gson.git",
+      "repo_root": "/work/bench/gson",
+      "policy": "/work/bench/gson/.codex-harness.md",
+      "known_good": [
+        "gson/src/main/java/com/google/gson/stream/JsonReader.java"
+      ],
+      "known_bad": [
+        "gson/src/test/"
+      ]
+    },
+    {
+      "name": "gvisor",
+      "repo_url": "https://github.com/google/gvisor.git",
+      "repo_root": "/work/bench/gvisor",
+      "policy": "/work/bench/gvisor/.codex-harness.md",
+      "signals_json": "/work/bench/gvisor/external_signals_YYYY-MM-DD.json",
+      "known_good": [
+        "runsc/specutils/specutils.go",
+        "pkg/sentry/fsimpl/"
+      ],
+      "known_bad": [
+        "test/",
+        "tools/"
+      ]
+    }
+  ]
+}

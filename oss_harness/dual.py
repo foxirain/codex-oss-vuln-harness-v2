@@ -6,6 +6,8 @@ from pathlib import Path
 from oss_harness.bundle import write_session_bundle
 from oss_harness.models import Candidate, ExternalSignal, LanguageStat, Signal, SymbolHint
 
+HEADER_SUFFIXES = {'.h', '.hh', '.hpp', '.hxx'}
+
 
 def write_dual_session_bundle(
     *,
@@ -80,34 +82,139 @@ def merge_dual_candidates(
     per_side_top: int,
     repo_root: Path,
 ) -> tuple[list[Candidate], dict[str, dict[str, object]]]:
-    blind_top = blind_candidates[:per_side_top]
-    signal_top = signal_candidates[:per_side_top]
+    budget = max(1, per_side_top * 2)
     merged: list[Candidate] = []
     merged_by_path: dict[str, Candidate] = {}
     provenance: dict[str, dict[str, object]] = {}
+    counters = {'header_only': 0, 'subsystem': {}, 'path_class': {}}
+    limits = {
+        'header_only': max(1, budget // 5),
+        'subsystem': max(2, budget // 3),
+        'path_class': max(2, budget // 2),
+    }
 
-    for index in range(max(len(blind_top), len(signal_top))):
-        for source_name, seq in (('blind', blind_top), ('signal', signal_top)):
-            if index >= len(seq):
+    blind_state = _SelectionState('blind', blind_candidates, per_side_top)
+    signal_state = _SelectionState('signal', signal_candidates, per_side_top)
+
+    while len(merged) < budget and (blind_state.needs_more() or signal_state.needs_more()):
+        progress = False
+        for state in (blind_state, signal_state):
+            if len(merged) >= budget or not state.needs_more():
                 continue
-            candidate = seq[index]
-            rel_path = str(candidate.path.relative_to(repo_root))
-            entry = provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})
-            if source_name not in entry['sources']:
-                entry['sources'].append(source_name)
-            entry[f'{source_name}_rank'] = index + 1
-            if rel_path not in merged_by_path:
-                clone = _clone_candidate(candidate)
-                clone.reasons = list(clone.reasons) + [f'dual_mode:{source_name}_top_rank={index + 1}']
-                merged_by_path[rel_path] = clone
-                merged.append(clone)
-            else:
-                _merge_candidate(merged_by_path[rel_path], candidate, source_name=source_name, rank=index + 1)
+            if _consume_next_candidate(state, repo_root, merged, merged_by_path, provenance, counters, limits, relaxed=False):
+                progress = True
+        if not progress:
+            break
+
+    while len(merged) < budget:
+        progress = False
+        for state in (blind_state, signal_state):
+            if len(merged) >= budget:
+                break
+            if _consume_next_candidate(state, repo_root, merged, merged_by_path, provenance, counters, limits, relaxed=True):
+                progress = True
+        if not progress:
+            break
 
     for merged_rank, candidate in enumerate(merged, start=1):
         rel_path = str(candidate.path.relative_to(repo_root))
         provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})['merged_rank'] = merged_rank
     return merged, provenance
+
+
+class _SelectionState:
+    def __init__(self, source_name: str, candidates: list[Candidate], unique_budget: int) -> None:
+        self.source_name = source_name
+        self.candidates = candidates
+        self.unique_budget = unique_budget
+        self.cursor = 0
+        self.unique_added = 0
+        self.deferred: list[tuple[int, Candidate]] = []
+
+    def needs_more(self) -> bool:
+        return self.unique_added < self.unique_budget and self.cursor < len(self.candidates)
+
+
+def _consume_next_candidate(
+    state: _SelectionState,
+    repo_root: Path,
+    merged: list[Candidate],
+    merged_by_path: dict[str, Candidate],
+    provenance: dict[str, dict[str, object]],
+    counters: dict[str, object],
+    limits: dict[str, int],
+    *,
+    relaxed: bool,
+) -> bool:
+    if relaxed and state.deferred:
+        rank, candidate = state.deferred.pop(0)
+        return _accept_candidate(candidate, rank=rank, state=state, repo_root=repo_root, merged=merged, merged_by_path=merged_by_path, provenance=provenance, counters=counters, limits=limits, relaxed=True)
+
+    while state.cursor < len(state.candidates):
+        rank = state.cursor + 1
+        candidate = state.candidates[state.cursor]
+        state.cursor += 1
+        rel_path = str(candidate.path.relative_to(repo_root))
+        entry = provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})
+        if state.source_name not in entry['sources']:
+            entry['sources'].append(state.source_name)
+        entry[f'{state.source_name}_rank'] = rank
+        if rel_path in merged_by_path:
+            _merge_candidate(merged_by_path[rel_path], candidate, source_name=state.source_name, rank=rank)
+            continue
+        if not relaxed and _violates_diversity(candidate, counters, limits):
+            state.deferred.append((rank, candidate))
+            continue
+        return _accept_candidate(candidate, rank=rank, state=state, repo_root=repo_root, merged=merged, merged_by_path=merged_by_path, provenance=provenance, counters=counters, limits=limits, relaxed=relaxed)
+    return False
+
+
+def _accept_candidate(
+    candidate: Candidate,
+    *,
+    rank: int,
+    state: _SelectionState,
+    repo_root: Path,
+    merged: list[Candidate],
+    merged_by_path: dict[str, Candidate],
+    provenance: dict[str, dict[str, object]],
+    counters: dict[str, object],
+    limits: dict[str, int],
+    relaxed: bool,
+) -> bool:
+    rel_path = str(candidate.path.relative_to(repo_root))
+    clone = _clone_candidate(candidate)
+    clone.reasons = list(clone.reasons) + [f'dual_mode:{state.source_name}_top_rank={rank}']
+    if relaxed:
+        clone.reasons.append('dual_mode:relaxed_diversity_fill')
+    merged_by_path[rel_path] = clone
+    merged.append(clone)
+    state.unique_added += 1
+    _bump_diversity_counters(candidate, counters)
+    provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})
+    return True
+
+
+def _violates_diversity(candidate: Candidate, counters: dict[str, object], limits: dict[str, int]) -> bool:
+    subsystem = candidate.subsystem or candidate.path.parts[0]
+    path_class = candidate.exposure or 'unclassified'
+    is_header = candidate.path.suffix.lower() in HEADER_SUFFIXES
+    if is_header and int(counters['header_only']) >= limits['header_only']:
+        return True
+    if int(counters['subsystem'].get(subsystem, 0)) >= limits['subsystem']:
+        return True
+    if int(counters['path_class'].get(path_class, 0)) >= limits['path_class']:
+        return True
+    return False
+
+
+def _bump_diversity_counters(candidate: Candidate, counters: dict[str, object]) -> None:
+    subsystem = candidate.subsystem or candidate.path.parts[0]
+    path_class = candidate.exposure or 'unclassified'
+    counters['subsystem'][subsystem] = int(counters['subsystem'].get(subsystem, 0)) + 1
+    counters['path_class'][path_class] = int(counters['path_class'].get(path_class, 0)) + 1
+    if candidate.path.suffix.lower() in HEADER_SUFFIXES:
+        counters['header_only'] = int(counters['header_only']) + 1
 
 
 def _clone_candidate(candidate: Candidate) -> Candidate:

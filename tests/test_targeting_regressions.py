@@ -4,6 +4,8 @@ import unittest
 
 from oss_harness.models import ExternalSignal, Signal
 from oss_harness.targeting import (
+    _should_ignore_signal_line,
+    _semantic_proximity_boost,
     _artifact_profile,
     _canonicalize_policy_paths,
     _external_signal_profile,
@@ -165,6 +167,21 @@ class TargetingRegressionTests(unittest.TestCase):
             generated_profile=profile,
         )
         self.assertTrue(reason)
+
+    def test_c_cpp_comment_and_macro_lines_do_not_count_as_real_signals(self) -> None:
+        self.assertTrue(_should_ignore_signal_line('c_cpp', 'dangerous_copy', '#define memcpy(x,y,z) ((void)0)'))
+        self.assertTrue(_should_ignore_signal_line('c_cpp', 'dangerous_copy', '// memcpy(dst, src, len)'))
+        self.assertTrue(_should_ignore_signal_line('c_cpp', 'unsafe_cast', 'typedef Foo* Bar;'))
+        self.assertFalse(_should_ignore_signal_line('c_cpp', 'dangerous_copy', 'memcpy(dst, src, len);'))
+
+    def test_semantic_proximity_rewards_close_entrypoint_to_sink_paths(self) -> None:
+        class _Meta:
+            entrypoint_lines = [10]
+            request_lines = [12]
+            sink_lines = [16]
+        score, reasons = _semantic_proximity_boost(_Meta())
+        self.assertGreaterEqual(score, 8)
+        self.assertTrue(any('request_sink_proximity' in reason for reason in reasons))
 
 
 if __name__ == '__main__':
