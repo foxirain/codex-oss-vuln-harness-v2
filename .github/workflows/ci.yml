@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: bash -n scripts/*.sh
+      - name: Build and installed-wheel smoke test
+        run: |
+          python -m pip wheel . --no-deps -w "$RUNNER_TEMP/wheels"
+          python -m venv /tmp/oss-harness-smoke
+          /tmp/oss-harness-smoke/bin/pip install "$RUNNER_TEMP"/wheels/*.whl
+          cd "$RUNNER_TEMP"
+          /tmp/oss-harness-smoke/bin/python -c 'import oss_harness; print(oss_harness.__version__)'
+          /tmp/oss-harness-smoke/bin/oss-harness --help

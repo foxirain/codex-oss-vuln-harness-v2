@@ -22,7 +22,15 @@ class EvaluationTests(unittest.TestCase):
             (session / 'autopilot' / 'findings' / 'finding-1.txt').write_text('x', encoding='utf-8')
             (session / 'review' / 'review_index.json').write_text(json.dumps({
                 'reviews': [
-                    {'finding_file': 'finding-1.txt', 'tier': 'A'},
+                    {
+                        'finding_file': 'finding-1.txt', 'title': 'Bounds violation',
+                        'tier': 'A', 'confidence': 'high', 'disposition': 'strong',
+                        'summary': 'Attacker bytes reach a fixed-size copy.',
+                        'entrypoint': 'parse', 'reachability': 'public parser API',
+                        'attacker_control': 'input bytes', 'sink': 'memcpy',
+                        'impact': 'out-of-bounds write', 'key_evidence': ['src/good.cc:1'],
+                        'blocking_gaps': [], 'next_actions': ['build repro'],
+                    },
                 ]
             }), encoding='utf-8')
             corpus = root / 'corpus.json'
@@ -41,7 +49,7 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(result['aggregate']['cases'], 1)
             self.assertEqual(result['cases'][0]['known_good_hits'], ['src/good.cc'])
             self.assertEqual(result['cases'][0]['known_bad_hits'], ['src/noisy.cc'])
-            self.assertEqual(result['cases'][0]['finding_promotion_precision'], 1.0)
+            self.assertEqual(result['cases'][0]['review_confirmation_rate'], 1.0)
 
 
 if __name__ == '__main__':

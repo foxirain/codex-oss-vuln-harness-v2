@@ -6,16 +6,19 @@ from pathlib import Path
 from oss_harness.models import Candidate, LanguageStat
 from oss_harness.policy import render_policy_summary
 from oss_harness.prompting import prompt_profile_for_candidate, render_bundle_prompt
+from oss_harness.paths import safe_repo_file
 from oss_harness.session import initialize_state
 
 
-def write_session_bundle(repo_root: Path, out_dir: Path, candidates: list[Candidate], top_n: int, policy: dict, language_stats: list[LanguageStat]) -> Path:
+def write_session_bundle(repo_root: Path, out_dir: Path, candidates: list[Candidate], top_n: int, policy: dict, language_stats: list[LanguageStat], provenance: dict | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle_dir = out_dir / 'bundles'
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_candidates = []
     for candidate in candidates:
+        if safe_repo_file(repo_root, candidate.path) is None:
+            raise ValueError(f'candidate escapes repository or is a symlink: {candidate.path}')
         item = candidate.to_dict(repo_root)
         item['prompt_profile'] = prompt_profile_for_candidate(candidate)
         manifest_candidates.append(item)
@@ -30,6 +33,7 @@ def write_session_bundle(repo_root: Path, out_dir: Path, candidates: list[Candid
         'preferred_sinks': policy.get('preferred_sinks', []),
         'languages': [{'language': item.language, 'file_count': item.file_count, 'extensions': item.extensions} for item in language_stats],
         'candidates': manifest_candidates,
+        'provenance': provenance or {},
     }
     (out_dir / 'targets.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 
@@ -60,7 +64,7 @@ def write_session_bundle(repo_root: Path, out_dir: Path, candidates: list[Candid
         prompt_path.write_text(render_bundle_prompt(repo_root, candidate, policy, profile=profile), encoding='utf-8')
 
         snippet_path = bundle_dir / slug.replace('.md', '.snippet.txt')
-        snippet_path.write_text(_extract_snippet(candidate, profile=profile), encoding='utf-8')
+        snippet_path.write_text(_extract_snippet(repo_root, candidate, profile=profile), encoding='utf-8')
 
         surfaces = ', '.join(candidate.attack_surfaces[:3]) or 'none'
         sinks = ', '.join(candidate.sink_kinds[:3]) or 'none'
@@ -80,9 +84,12 @@ def write_session_bundle(repo_root: Path, out_dir: Path, candidates: list[Candid
     return out_dir
 
 
-def _extract_snippet(candidate: Candidate, profile: str = 'balanced') -> str:
+def _extract_snippet(repo_root: Path, candidate: Candidate, profile: str = 'balanced') -> str:
+    safe_path = safe_repo_file(repo_root, candidate.path)
+    if safe_path is None:
+        return ''
     try:
-        lines = candidate.path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        lines = safe_path.read_text(encoding='utf-8', errors='ignore').splitlines()
     except OSError:
         return ''
     seen: set[tuple[int, int]] = set()

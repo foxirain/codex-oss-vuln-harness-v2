@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from oss_harness.bundle import write_session_bundle
@@ -18,11 +19,14 @@ def write_dual_session_bundle(
     per_side_top: int,
     policy: dict,
     language_stats: list[LanguageStat],
+    scan_provenance: dict | None = None,
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     blind_dir = out_dir / 'blind'
     signal_dir = out_dir / 'signal'
     merged_dir = out_dir / 'merged'
+
+    blind_scan_provenance, signal_scan_provenance, merged_scan_provenance = _mode_provenance(scan_provenance or {})
 
     write_session_bundle(
         repo_root=repo_root,
@@ -31,6 +35,7 @@ def write_dual_session_bundle(
         top_n=per_side_top,
         policy=policy,
         language_stats=language_stats,
+        provenance=blind_scan_provenance,
     )
     write_session_bundle(
         repo_root=repo_root,
@@ -39,9 +44,10 @@ def write_dual_session_bundle(
         top_n=per_side_top,
         policy=policy,
         language_stats=language_stats,
+        provenance=signal_scan_provenance,
     )
 
-    merged_candidates, provenance = merge_dual_candidates(
+    merged_candidates, dual_candidate_provenance = merge_dual_candidates(
         blind_candidates,
         signal_candidates,
         per_side_top=per_side_top,
@@ -54,6 +60,7 @@ def write_dual_session_bundle(
         top_n=min(per_side_top * 2, len(merged_candidates)),
         policy=policy,
         language_stats=language_stats,
+        provenance=merged_scan_provenance,
     )
 
     _augment_session(blind_dir, session_mode='blind', per_side_top=per_side_top)
@@ -62,7 +69,7 @@ def write_dual_session_bundle(
         merged_dir,
         session_mode='merged',
         per_side_top=per_side_top,
-        provenance=provenance,
+        dual_provenance=dual_candidate_provenance,
         blind_session=blind_dir,
         signal_session=signal_dir,
     )
@@ -117,7 +124,7 @@ def merge_dual_candidates(
             break
 
     for merged_rank, candidate in enumerate(merged, start=1):
-        rel_path = str(candidate.path.relative_to(repo_root))
+        rel_path = candidate.path.relative_to(repo_root).as_posix()
         provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})['merged_rank'] = merged_rank
     return merged, provenance
 
@@ -148,17 +155,29 @@ def _consume_next_candidate(
 ) -> bool:
     if relaxed and state.deferred:
         rank, candidate = state.deferred.pop(0)
+        rel_path = candidate.path.relative_to(repo_root).as_posix()
+        entry = provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})
+        if state.source_name not in entry['sources']:
+            entry['sources'].append(state.source_name)
+        rank_key = f'{state.source_name}_rank'
+        if entry.get(rank_key) is None:
+            entry[rank_key] = rank
+        if rel_path in merged_by_path:
+            _merge_candidate(merged_by_path[rel_path], candidate, source_name=state.source_name, rank=rank)
+            return True
         return _accept_candidate(candidate, rank=rank, state=state, repo_root=repo_root, merged=merged, merged_by_path=merged_by_path, provenance=provenance, counters=counters, limits=limits, relaxed=True)
 
     while state.cursor < len(state.candidates):
         rank = state.cursor + 1
         candidate = state.candidates[state.cursor]
         state.cursor += 1
-        rel_path = str(candidate.path.relative_to(repo_root))
+        rel_path = candidate.path.relative_to(repo_root).as_posix()
         entry = provenance.setdefault(rel_path, {'sources': [], 'blind_rank': None, 'signal_rank': None})
         if state.source_name not in entry['sources']:
             entry['sources'].append(state.source_name)
-        entry[f'{state.source_name}_rank'] = rank
+        rank_key = f'{state.source_name}_rank'
+        if entry.get(rank_key) is None:
+            entry[rank_key] = rank
         if rel_path in merged_by_path:
             _merge_candidate(merged_by_path[rel_path], candidate, source_name=state.source_name, rank=rank)
             continue
@@ -182,7 +201,7 @@ def _accept_candidate(
     limits: dict[str, int],
     relaxed: bool,
 ) -> bool:
-    rel_path = str(candidate.path.relative_to(repo_root))
+    rel_path = candidate.path.relative_to(repo_root).as_posix()
     clone = _clone_candidate(candidate)
     clone.reasons = list(clone.reasons) + [f'dual_mode:{state.source_name}_top_rank={rank}']
     if relaxed:
@@ -275,7 +294,9 @@ def _merge_candidate(existing: Candidate, incoming: Candidate, *, source_name: s
     existing.semantic_summary = _merge_unique(existing.semantic_summary, incoming.semantic_summary)[:6]
     existing.path_signals = _merge_unique(existing.path_signals, incoming.path_signals)
     existing.reasons = _merge_unique(existing.reasons, incoming.reasons)
-    existing.reasons.append(f'dual_mode:{source_name}_top_rank={rank}')
+    marker = f'dual_mode:{source_name}_top_rank={rank}'
+    if marker not in existing.reasons:
+        existing.reasons.append(marker)
     existing.signals = _merge_signals(existing.signals, incoming.signals)
     existing.external_signals = _merge_external(existing.external_signals, incoming.external_signals)
     if len(incoming.primary_symbols) > len(existing.primary_symbols):
@@ -330,7 +351,7 @@ def _augment_session(
     *,
     session_mode: str,
     per_side_top: int,
-    provenance: dict[str, dict[str, object]] | None = None,
+    dual_provenance: dict[str, dict[str, object]] | None = None,
     blind_session: Path | None = None,
     signal_session: Path | None = None,
 ) -> None:
@@ -342,9 +363,10 @@ def _augment_session(
         manifest['blind_session'] = str(blind_session)
     if signal_session is not None:
         manifest['signal_session'] = str(signal_session)
-    if provenance:
+    if dual_provenance:
+        manifest['dual_candidate_provenance'] = dual_provenance
         for candidate in manifest.get('candidates', []):
-            meta = provenance.get(candidate.get('path', ''), {})
+            meta = dual_provenance.get(candidate.get('path', ''), {})
             if meta:
                 candidate['dual_sources'] = meta.get('sources', [])
                 candidate['blind_rank'] = meta.get('blind_rank')
@@ -365,3 +387,21 @@ def _augment_session(
     header = '# OSS Codex Harness Session\n\n'
     text = text.replace(header, header + '\n'.join(prefix_lines) + '\n\n', 1)
     session_md.write_text(text, encoding='utf-8')
+
+
+def _mode_provenance(scan_provenance: dict) -> tuple[dict, dict, dict]:
+    signal = deepcopy(scan_provenance)
+    signal['scan_mode'] = 'signal'
+    signal['git_history'] = True
+    blind = deepcopy(scan_provenance)
+    blind['scan_mode'] = 'blind'
+    blind['git_history'] = False
+    for key in ('signals', 'crash_dir', 'sbom'):
+        blind.setdefault('inputs', {})[key] = None
+    merged = {
+        'harness_version': scan_provenance.get('harness_version', ''),
+        'repository': deepcopy(scan_provenance.get('repository', {})),
+        'scan_mode': 'merged',
+        'modes': {'blind': blind, 'signal': signal},
+    }
+    return blind, signal, merged

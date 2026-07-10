@@ -19,7 +19,7 @@ Options:
   --review-timeout SPEC     Review timeout per finding. Default: 20m
   --top N                   Number of prompt bundles to generate in scan. Default: 30
   --model MODEL             Optional Codex model override
-  --sandbox MODE            Codex sandbox mode. Default: workspace-write
+  --sandbox MODE            Codex sandbox mode. Default: read-only
   --sbom PATH               Optional SBOM JSON passed to scan for component-aware enrichment
   --no-include-snippet      Do not pass --include-snippet to autopilot
   --unsafe-bypass           Pass --dangerously-bypass-approvals-and-sandbox
@@ -42,7 +42,7 @@ PER_RUN_TIMEOUT="30m"
 REVIEW_TIMEOUT="20m"
 TOP="30"
 MODEL=""
-SANDBOX="workspace-write"
+SANDBOX="read-only"
 SBOM_PATH=""
 INCLUDE_SNIPPET=1
 UNSAFE_BYPASS=0

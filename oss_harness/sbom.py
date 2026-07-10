@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from oss_harness.models import ExternalSignal
+from oss_harness.paths import iter_repo_files
 
 GLUE_PATH_HINTS = (
     'bindings', 'binding', 'ffi', 'cffi', 'swig', 'wrapper', 'wrappers', 'adapter', 'shim', 'bridge', 'ext', 'extension'
@@ -28,9 +29,7 @@ def load_sbom_signal_index(repo_root: Path, sbom_path: Path | None) -> dict[str,
         return {}
     vulnerability_index = _extract_vulnerability_index(data)
     signals: dict[str, list[ExternalSignal]] = defaultdict(list)
-    for file_path in repo_root.rglob('*'):
-        if not file_path.is_file():
-            continue
+    for file_path in iter_repo_files(repo_root):
         rel_path = str(file_path.relative_to(repo_root)).replace('\\', '/')
         lowered = rel_path.lower()
         matched = []

@@ -6,6 +6,7 @@ import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from oss_harness.autopilot import run_autopilot
 from oss_harness.automation import run_bootstrap
@@ -15,11 +16,14 @@ from oss_harness.dual import write_dual_session_bundle
 from oss_harness.evaluation import run_eval_corpus
 from oss_harness.findings import list_finding_files, select_finding_files
 from oss_harness.ingest import load_response, parse_response
+from oss_harness.paths import validate_repo_target
 from oss_harness.policy import find_default_policy, load_policy, write_policy_template
+from oss_harness.provenance import scan_provenance
 from oss_harness.reporting import run_report
 from oss_harness.repro import run_repro
 from oss_harness.reviewing import TIER_ORDER, run_review
-from oss_harness.session import completed_ranks, load_state, record_review, response_archive_dir, response_path, save_state, set_pending_review
+from oss_harness.review_schema import validate_review
+from oss_harness.session import clear_manual_followup, completed_ranks, exclusive_response_lock, failed_ranks, load_state, record_review, response_archive_dir, response_path, set_pending_review
 from oss_harness.targeting import discover_candidates, load_json_config
 
 SUBCOMMANDS = {
@@ -49,9 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument('repo_root', help='Path to the repository to analyze.')
     scan_parser.add_argument('--policy', type=Path, help='Markdown policy file defining scope and exclusions. If omitted, the harness auto-detects a default policy file.')
     scan_parser.add_argument('--config', type=Path, help='Optional JSON config for include paths or signal caps.')
-    scan_parser.add_argument('--signals-json', type=Path, help='Optional local JSON containing crash, advisory, or external file signals. If omitted, the harness auto-detects likely signal files.')
-    scan_parser.add_argument('--crash-dir', type=Path, help='Optional directory of sanitizer, panic, or crash logs to map back into repo files. If omitted, the harness auto-detects likely crash directories.')
-    scan_parser.add_argument('--sbom', type=Path, help='Optional CycloneDX/SPDX/Syft-style SBOM JSON used for component-aware candidate enrichment. If omitted, the harness auto-detects likely SBOM files.')
+    scan_parser.add_argument('--signals-json', type=Path, help='Explicit analyst-provided JSON containing crash, advisory, or external file signals.')
+    scan_parser.add_argument('--crash-dir', type=Path, help='Explicit analyst-provided directory of sanitizer, panic, or crash logs.')
+    scan_parser.add_argument('--sbom', type=Path, help='Explicit analyst-provided CycloneDX/SPDX/Syft-style SBOM JSON.')
     scan_parser.add_argument('--out', type=Path, default=Path('artifacts'), help='Directory where session artifacts will be written.')
     scan_parser.add_argument('--limit', type=int, default=120, help='Maximum number of ranked candidates to retain.')
     scan_parser.add_argument('--top', type=int, default=30, help='How many prompt bundles to generate.')
@@ -60,9 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan_dual_parser.add_argument('repo_root', help='Path to the repository to analyze.')
     scan_dual_parser.add_argument('--policy', type=Path, help='Markdown policy file defining scope and exclusions. If omitted, the harness auto-detects a default policy file.')
     scan_dual_parser.add_argument('--config', type=Path, help='Optional JSON config for include paths or signal caps.')
-    scan_dual_parser.add_argument('--signals-json', type=Path, help='Optional local JSON containing crash, advisory, or external file signals. If omitted, the harness auto-detects likely signal files.')
-    scan_dual_parser.add_argument('--crash-dir', type=Path, help='Optional directory of sanitizer, panic, or crash logs to map back into repo files. If omitted, the harness auto-detects likely crash directories.')
-    scan_dual_parser.add_argument('--sbom', type=Path, help='Optional CycloneDX/SPDX/Syft-style SBOM JSON used for component-aware candidate enrichment. If omitted, the harness auto-detects likely SBOM files.')
+    scan_dual_parser.add_argument('--signals-json', type=Path, help='Explicit analyst-provided JSON containing crash, advisory, or external file signals.')
+    scan_dual_parser.add_argument('--crash-dir', type=Path, help='Explicit analyst-provided directory of sanitizer, panic, or crash logs.')
+    scan_dual_parser.add_argument('--sbom', type=Path, help='Explicit analyst-provided CycloneDX/SPDX/Syft-style SBOM JSON.')
     scan_dual_parser.add_argument('--out', type=Path, default=Path('artifacts'), help='Directory where session artifacts will be written.')
     scan_dual_parser.add_argument('--limit', type=int, default=120, help='Maximum number of ranked candidates to retain in each source session.')
     scan_dual_parser.add_argument('--top', type=int, default=10, help='How many top candidates to take from each source session into the merged session.')
@@ -139,8 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     autopilot_parser.add_argument('--per-run-timeout', default='20m', help='Maximum time per Codex execution. Example: 10m.')
     autopilot_parser.add_argument('--include-snippet', action='store_true', help='Append generated code snippets to prompts.')
     autopilot_parser.add_argument('--model', default='', help='Optional Codex model override.')
-    autopilot_parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'], default='workspace-write', help='Sandbox mode for codex exec when not bypassing safeguards.')
-    autopilot_parser.add_argument('--no-full-auto', action='store_true', help='Do not pass --full-auto to codex exec.')
+    autopilot_parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'], default='read-only', help='Sandbox mode for codex exec. Default: read-only.')
+    autopilot_parser.add_argument('--full-auto', action='store_true', help='Explicitly pass --full-auto; requires a writable sandbox.')
     autopilot_parser.add_argument('--dangerously-bypass-approvals-and-sandbox', action='store_true', help="Pass through Codex's unsafe bypass flag.")
     autopilot_parser.add_argument('--stop-on-finding', action='store_true', help='Stop as soon as a strong candidate is found.')
     return parser
@@ -150,8 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_codex_task_args(parser: argparse.ArgumentParser, *, timeout_default: str) -> None:
     parser.add_argument('--timeout', default=timeout_default, help=f'Maximum time budget for each Codex task. Default: {timeout_default}.')
     parser.add_argument('--model', default='', help='Optional Codex model override.')
-    parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'], default='workspace-write', help='Sandbox mode for codex exec when not bypassing safeguards.')
-    parser.add_argument('--no-full-auto', action='store_true', help='Do not pass --full-auto to codex exec.')
+    parser.add_argument('--sandbox', choices=['read-only', 'workspace-write', 'danger-full-access'], default='read-only', help='Sandbox mode for codex exec. Default: read-only.')
+    parser.add_argument('--full-auto', action='store_true', help='Explicitly pass --full-auto; requires a writable sandbox.')
     parser.add_argument('--dangerously-bypass-approvals-and-sandbox', action='store_true', help="Pass through Codex's unsafe bypass flag.")
 
 
@@ -161,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     normalized_argv = _normalize_argv(raw_argv)
     parser = build_parser()
     args = parser.parse_args(normalized_argv)
+    if getattr(args, 'full_auto', False) and getattr(args, 'sandbox', '') == 'read-only' and not getattr(args, 'dangerously_bypass_approvals_and_sandbox', False):
+        parser.error('--full-auto requires an explicitly writable --sandbox mode')
     if args.command == 'init-policy':
         path = write_policy_template(Path(args.path).expanduser().resolve())
         print(f'policy={path}')
@@ -228,21 +234,22 @@ def _run_bootstrap(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         timeout_spec=args.timeout,
         model=args.model,
         sandbox=args.sandbox,
-        full_auto=not args.no_full_auto,
+        full_auto=args.full_auto,
         unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
     )
     for key, value in result.items():
         print(f'{key}={value}')
-    return 0 if policy_path.exists() and signals_path.exists() else 1
+    return 0 if result.get('success') == 'true' else 1
 
 
 
 def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     repo_root, policy_path, signals_json_path, crash_dir, sbom_path, config, policy = _resolve_scan_inputs(parser, args)
     candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=signals_json_path, crash_dir=crash_dir, sbom_path=sbom_path)
-    timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+    timestamp = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-{uuid4().hex[:8]}"
     session_dir = args.out / f'session-{timestamp}'
-    write_session_bundle(repo_root=repo_root, out_dir=session_dir, candidates=candidates, top_n=args.top, policy=policy, language_stats=language_stats)
+    provenance = scan_provenance(repo_root, policy=policy_path, config=Path(args.config).expanduser().resolve() if args.config else None, signals=signals_json_path, crash_dir=crash_dir, sbom=sbom_path)
+    write_session_bundle(repo_root=repo_root, out_dir=session_dir, candidates=candidates, top_n=args.top, policy=policy, language_stats=language_stats, provenance=provenance)
     print(f'session={session_dir}')
     print(f'repo_root={repo_root}')
     print(f"policy={policy_path or ''}")
@@ -258,9 +265,9 @@ def _run_scan(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
 
 def _run_scan_dual(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     repo_root, policy_path, signals_json_path, crash_dir, sbom_path, config, policy = _resolve_scan_inputs(parser, args)
-    blind_candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=None, crash_dir=None, sbom_path=None)
+    blind_candidates, language_stats = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=None, crash_dir=None, sbom_path=None, use_git_history=False)
     signal_candidates, _ = discover_candidates(repo_root, policy=policy, limit=args.limit, config=config, external_signal_path=signals_json_path, crash_dir=crash_dir, sbom_path=sbom_path)
-    timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+    timestamp = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-{uuid4().hex[:8]}"
     session_root = args.out / f'dual-session-{timestamp}'
     result = write_dual_session_bundle(
         repo_root=repo_root,
@@ -270,6 +277,7 @@ def _run_scan_dual(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         per_side_top=args.top,
         policy=policy,
         language_stats=language_stats,
+        scan_provenance=scan_provenance(repo_root, policy=policy_path, config=Path(args.config).expanduser().resolve() if args.config else None, signals=signals_json_path, crash_dir=crash_dir, sbom=sbom_path),
     )
     print(f"session_root={result['session_root']}")
     print(f"merged_session={result['merged_session']}")
@@ -297,9 +305,9 @@ def _resolve_scan_inputs(parser: argparse.ArgumentParser, args: argparse.Namespa
     if not repo_root.is_dir():
         parser.error(f'repository is not a directory: {repo_root}')
     policy_path = Path(args.policy).expanduser().resolve() if args.policy else find_default_policy(repo_root)
-    signals_json_path = Path(args.signals_json).expanduser().resolve() if args.signals_json else _find_default_signals_json(repo_root)
-    crash_dir = Path(args.crash_dir).expanduser().resolve() if args.crash_dir else _find_default_crash_dir(repo_root)
-    sbom_path = Path(args.sbom).expanduser().resolve() if args.sbom else _find_default_sbom(repo_root)
+    signals_json_path = Path(args.signals_json).expanduser().resolve() if args.signals_json else None
+    crash_dir = Path(args.crash_dir).expanduser().resolve() if args.crash_dir else None
+    sbom_path = Path(args.sbom).expanduser().resolve() if args.sbom else None
     config = load_json_config(Path(args.config).expanduser().resolve()) if args.config else {}
     policy = load_policy(policy_path)
     return repo_root, policy_path, signals_json_path, crash_dir, sbom_path, config, policy
@@ -344,7 +352,11 @@ def _run_next(args: argparse.Namespace) -> int:
 
 
 def _run_record(args: argparse.Namespace) -> int:
-    state = record_review(session_dir=Path(args.session_dir).expanduser().resolve(), rank=args.rank, target=args.target, verdict=args.verdict, notes=args.notes, next_target=args.next_target, next_prompt=args.next_prompt, auto_advance=not args.no_auto_advance)
+    session_dir = Path(args.session_dir).expanduser().resolve()
+    manifest = _load_manifest(session_dir)
+    target = validate_repo_target(Path(manifest['repo_root']), args.target)
+    next_target = validate_repo_target(Path(manifest['repo_root']), args.next_target) if args.next_target else ''
+    state = record_review(session_dir=session_dir, rank=args.rank, target=target, verdict=args.verdict, notes=args.notes, next_target=next_target, next_prompt=args.next_prompt, auto_advance=not args.no_auto_advance)
     _print_record_result(args.rank, args.verdict, state)
     return 0
 
@@ -362,6 +374,14 @@ def _run_ingest(args: argparse.Namespace) -> int:
 
 def _run_loop(args: argparse.Namespace) -> int:
     session_dir = Path(args.session_dir).expanduser().resolve()
+    try:
+        with exclusive_response_lock(session_dir):
+            return _run_loop_locked(args, session_dir)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _run_loop_locked(args: argparse.Namespace, session_dir: Path) -> int:
     state = load_state(session_dir)
     fixed_response = Path(state.get('pending_response_file', response_path(session_dir)))
     if fixed_response.exists() and fixed_response.stat().st_size > 0:
@@ -372,7 +392,7 @@ def _run_loop(args: argparse.Namespace) -> int:
             state = _ingest_text(session_dir, text, rank=pending_rank, target=pending_target, next_prompt=args.next_prompt, auto_advance=True)
             archive_dir = response_archive_dir(session_dir)
             archive_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+            stamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
             shutil.move(str(fixed_response), str(archive_dir / f'response-{stamp}.txt'))
             print(f"ingested_verdict={state['history'][-1]['verdict']}")
             print(f"ingested_next_target={state['history'][-1].get('next_target', '')}")
@@ -398,6 +418,7 @@ def _run_status(args: argparse.Namespace) -> int:
     print(f"pending_target={state.get('pending_target', '')}")
     print(f"fixed_response_file={state.get('pending_response_file', response_path(session_dir))}")
     print(f"finding_count={len(list_finding_files(session_dir))}")
+    print(f"failed_ranks={sorted(failed_ranks(state))}")
     for item in state.get('history', [])[-5:]:
         print(f"history rank={item.get('rank')} verdict={item.get('verdict')} target={item.get('target')}")
     return 0
@@ -417,12 +438,12 @@ def _run_review(args: argparse.Namespace) -> int:
         timeout_spec=args.timeout,
         model=args.model,
         sandbox=args.sandbox,
-        full_auto=not args.no_full_auto,
+        full_auto=args.full_auto,
         unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
     )
     for key, value in result.items():
         print(f'{key}={value}')
-    return 0
+    return 0 if result.get('success') == 'true' else 1
 
 
 
@@ -439,12 +460,12 @@ def _run_repro(args: argparse.Namespace) -> int:
         timeout_spec=args.timeout,
         model=args.model,
         sandbox=args.sandbox,
-        full_auto=not args.no_full_auto,
+        full_auto=args.full_auto,
         unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
     )
     for key, value in result.items():
         print(f'{key}={value}')
-    return 0
+    return 0 if result.get('success') == 'true' else 1
 
 
 
@@ -463,17 +484,17 @@ def _run_report(args: argparse.Namespace) -> int:
         timeout_spec=args.timeout,
         model=args.model,
         sandbox=args.sandbox,
-        full_auto=not args.no_full_auto,
+        full_auto=args.full_auto,
         unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox,
     )
     for key, value in result.items():
         print(f'{key}={value}')
-    return 0
+    return 0 if result.get('success') == 'true' else 1
 
 
 
 def _run_autopilot(args: argparse.Namespace) -> int:
-    return run_autopilot(Path(args.session_dir), include_snippet=args.include_snippet, duration_spec=args.duration, per_run_timeout_spec=args.per_run_timeout, model=args.model, sandbox=args.sandbox, full_auto=not args.no_full_auto, unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox, stop_on_finding=args.stop_on_finding)
+    return run_autopilot(Path(args.session_dir), include_snippet=args.include_snippet, duration_spec=args.duration, per_run_timeout_spec=args.per_run_timeout, model=args.model, sandbox=args.sandbox, full_auto=args.full_auto, unsafe_bypass=args.dangerously_bypass_approvals_and_sandbox, stop_on_finding=args.stop_on_finding)
 
 
 
@@ -500,40 +521,6 @@ def _run_eval_corpus(args: argparse.Namespace) -> int:
     return 0
 
 
-def _find_default_signals_json(repo_root: Path) -> Path | None:
-    candidates = sorted(repo_root.glob('external_signals*.json')) + sorted(repo_root.glob('*signals*.json'))
-    best = _choose_latest_file(candidates)
-    return best if best and best.is_file() else None
-
-
-
-def _find_default_sbom(repo_root: Path) -> Path | None:
-    patterns = ('sbom*.json', '*cyclonedx*.json', '*cdx*.json', '*spdx*.json', 'bom*.json', 'syft*.json')
-    candidates: list[Path] = []
-    for pattern in patterns:
-        candidates.extend(repo_root.glob(pattern))
-    best = _choose_latest_file(sorted({path.resolve() for path in candidates}))
-    return best if best and best.is_file() else None
-
-
-
-def _find_default_crash_dir(repo_root: Path) -> Path | None:
-    for name in ('crash-logs', 'crashes', 'crash', 'artifacts/crash-logs', 'artifacts/crashes', '.codex-crash-logs'):
-        candidate = repo_root / name
-        if candidate.exists() and candidate.is_dir():
-            return candidate
-    return None
-
-
-
-def _choose_latest_file(candidates: list[Path]) -> Path | None:
-    files = [path for path in candidates if path.exists() and path.is_file()]
-    if not files:
-        return None
-    return max(files, key=lambda item: (item.stat().st_mtime, item.name))
-
-
-
 def _load_rank_prompt(session_dir: Path, manifest: dict, rank: int) -> tuple[str, Path, Path, str]:
     candidates = manifest.get('candidates', [])
     if not candidates:
@@ -541,13 +528,17 @@ def _load_rank_prompt(session_dir: Path, manifest: dict, rank: int) -> tuple[str
     if rank < 1 or rank > len(candidates):
         raise SystemExit(f'rank out of range: {rank} (1-{len(candidates)})')
     candidate = candidates[rank - 1]
+    repo_root = Path(manifest['repo_root']).expanduser().resolve()
+    target = validate_repo_target(repo_root, str(candidate.get('path', '')))
+    if '::' in target:
+        raise SystemExit('ranked manifest targets must identify files, not symbols')
     bundle_dir = session_dir / 'bundles'
-    bundle_prefix = f"{rank:02d}-{candidate['path'].replace('/', '__')}"
+    bundle_prefix = f"{rank:02d}-{target.replace('/', '__')}"
     prompt_path = bundle_dir / f'{bundle_prefix}.md'
     snippet_path = bundle_dir / f'{bundle_prefix}.snippet.txt'
     if not prompt_path.exists():
         raise SystemExit(f'missing prompt bundle: {prompt_path}. Rerun `oss-harness scan` with the current harness version and use the new session directory.')
-    return prompt_path.read_text(encoding='utf-8'), prompt_path, snippet_path, candidate['path']
+    return prompt_path.read_text(encoding='utf-8'), prompt_path, snippet_path, target
 
 
 
@@ -557,14 +548,15 @@ def _print_next_prompt(session_dir: Path, include_snippet: bool) -> None:
     manual_target = state.get('manual_next_target', '').strip()
     manual_prompt = state.get('manual_next_prompt', '').strip()
     depth = int(state.get('manual_followup_depth', 0))
+    if manual_target:
+        try:
+            manual_target = validate_repo_target(Path(manifest['repo_root']), manual_target)
+        except ValueError:
+            manual_target = ''
+            manual_prompt = ''
+            state = clear_manual_followup(session_dir)
     if manual_target and depth >= MAX_MANUAL_FOLLOWUPS:
-        state['manual_next_target'] = ''
-        state['manual_next_prompt'] = ''
-        state['manual_followup_depth'] = 0
-        state['pending_target'] = ''
-        state['pending_rank'] = None
-        state['pending_prompt_source'] = ''
-        save_state(session_dir, state)
+        state = clear_manual_followup(session_dir, clear_pending=True)
         manual_target = ''
         manual_prompt = ''
     if manual_target:
@@ -581,9 +573,15 @@ def _print_next_prompt(session_dir: Path, include_snippet: bool) -> None:
 
 def _ingest_text(session_dir: Path, text: str, rank: int | None, target: str, next_prompt: str, auto_advance: bool) -> dict:
     parsed = parse_response(text)
+    if parsed['verdict'] in {'cve_candidate', 'plausible_security_bug'} and not parsed.get('promotion_ready'):
+        raise ValueError('strong verdict is missing meaningful structured proof fields')
     state = load_state(session_dir)
+    manifest = _load_manifest(session_dir)
+    target = validate_repo_target(Path(manifest['repo_root']), target)
     depth = int(state.get('manual_followup_depth', 0))
     next_target = parsed['next_target'] if parsed['should_continue'] else ''
+    if next_target:
+        next_target = validate_repo_target(Path(manifest['repo_root']), next_target)
     if next_target and depth >= MAX_MANUAL_FOLLOWUPS:
         next_target = ''
         next_prompt = ''
@@ -619,7 +617,7 @@ def _print_codex_runbook(repo_root: str, prompt: str, prompt_path: Path, snippet
 
 
 def _next_pending_rank(state: dict, manifest: dict) -> int:
-    done = completed_ranks(state)
+    done = completed_ranks(state) | failed_ranks(state)
     candidates = manifest.get('candidates', [])
     start = max(1, int(state.get('current_rank', 1)))
     for rank in range(start, len(candidates) + 1):
@@ -655,7 +653,7 @@ def _manual_followup_prompt(state: dict, manual_target: str, manual_prompt: str)
     if manual_prompt:
         lines.extend(['', manual_prompt.strip()])
     else:
-        lines.extend(['', 'Requirements:', '1. Confirm the exact attacker-reachable path into this target.', '2. Validate concrete attacker control, trust-boundary crossing, and security impact.', '3. If nothing concrete exists, give a strict verdict and the single best next target.'])
+        lines.extend(['', 'Requirements:', '1. Confirm the exact attacker-reachable path into this target.', '2. Validate concrete attacker control, trust-boundary crossing, and security impact.', '3. If nothing concrete exists, give a strict verdict and one repository-relative `file::optional_symbol` next target. Never use absolute paths, `..`, URIs, or symlinks.'])
     return '\n'.join(lines) + '\n'
 
 
@@ -676,11 +674,14 @@ def _select_findings_for_action(session_dir: Path, selectors: list[str], tier_mi
     if not review_index_path.exists():
         raise SystemExit(f'missing review index: {review_index_path}. Run `oss-harness review` first or omit --tier-min.')
     review_index = json.loads(review_index_path.read_text(encoding='utf-8'))
-    allowed_names = {
-        item.get('finding_file')
-        for item in review_index.get('reviews', [])
-        if TIER_ORDER.get(str(item.get('tier', 'D')).upper(), 0) >= TIER_ORDER[tier_min]
-    }
+    allowed_names = set()
+    for item in review_index.get('reviews', []):
+        try:
+            review = validate_review(item)
+        except (TypeError, ValueError):
+            continue
+        if TIER_ORDER[review['tier']] >= TIER_ORDER[tier_min]:
+            allowed_names.add(review['finding_file'])
     filtered = [path for path in finding_files if path.name in allowed_names]
     return filtered
 

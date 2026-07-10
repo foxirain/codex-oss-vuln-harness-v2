@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-oss-vuln-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "General OSS vulnerability hunting harness for Codex"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-  { name = "OpenAI Codex" }
+  { name = "foxirain" }
 ]
 dependencies = []
 

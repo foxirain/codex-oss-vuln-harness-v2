@@ -19,7 +19,7 @@ Options:
   --review-timeout SPEC     Review timeout per finding. Default: 20m
   --top N                   Per-side top count for dual scan. Example: --top 10 => blind 10 + signal 10 => merged up to 20. Default: 10
   --model MODEL             Optional Codex model override
-  --sandbox MODE            Codex sandbox mode. Default: workspace-write
+  --sandbox MODE            Codex sandbox mode. Default: read-only
   --sbom PATH               Optional SBOM JSON passed to scan-dual for signal-aware enrichment
   --no-include-snippet      Do not pass --include-snippet to autopilot
   --unsafe-bypass           Pass --dangerously-bypass-approvals-and-sandbox
@@ -42,7 +42,7 @@ PER_RUN_TIMEOUT="30m"
 REVIEW_TIMEOUT="20m"
 TOP="10"
 MODEL=""
-SANDBOX="workspace-write"
+SANDBOX="read-only"
 SBOM_PATH=""
 INCLUDE_SNIPPET=1
 UNSAFE_BYPASS=0

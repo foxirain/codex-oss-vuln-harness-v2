@@ -24,7 +24,7 @@ Options:
   --report-timeout SPEC    Report timeout per finding. Default: 20m
   --tier-min TIER          Minimum review tier for repro/report. Default: A
   --model MODEL            Optional Codex model override
-  --sandbox MODE           Codex sandbox mode. Default: workspace-write
+  --sandbox MODE           Codex sandbox mode. Default: read-only
   --sbom PATH              Optional SBOM JSON passed to scan for component-aware enrichment
   --no-include-snippet     Do not pass --include-snippet to autopilot
   --unsafe-bypass          Pass --dangerously-bypass-approvals-and-sandbox
@@ -51,7 +51,7 @@ REPRO_TIMEOUT="45m"
 REPORT_TIMEOUT="20m"
 TIER_MIN="A"
 MODEL=""
-SANDBOX="workspace-write"
+SANDBOX="read-only"
 SBOM_PATH=""
 INCLUDE_SNIPPET=1
 UNSAFE_BYPASS=0

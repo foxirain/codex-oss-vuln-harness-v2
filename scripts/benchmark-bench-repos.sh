@@ -21,7 +21,7 @@ Options:
   --skip-bootstrap        Do not run bootstrap automatically
   --refresh-bootstrap     Re-run bootstrap even if policy/signals already exist
   --model MODEL           Optional model override for bootstrap
-  --sandbox MODE          Sandbox for bootstrap. Default: workspace-write
+  --sandbox MODE          Sandbox for bootstrap. Default: read-only
   --unsafe-bypass         Pass --dangerously-bypass-approvals-and-sandbox to bootstrap
   -h, --help              Show help
 
@@ -38,7 +38,7 @@ OUTPUT=""
 SKIP_BOOTSTRAP=0
 REFRESH_BOOTSTRAP=0
 MODEL=""
-SANDBOX="workspace-write"
+SANDBOX="read-only"
 UNSAFE_BYPASS=0
 TODAY_UTC="$(date -u +%F)"
 CORPUS_PATH="/tmp/codex-oss-benchmark-bench-repos-${TODAY_UTC}.json"

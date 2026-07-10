@@ -11,6 +11,7 @@ from oss_harness.sbom import load_sbom_signal_index
 from oss_harness.graph import build_import_graph
 from oss_harness.history import collect_git_history_signals
 from oss_harness.models import Candidate, ExternalSignal, LanguageStat, Signal
+from oss_harness.paths import iter_repo_files, safe_repo_file
 from oss_harness.semantic import build_semantic_index
 from oss_harness.policy import policy_list
 from oss_harness.taxonomy import build_entrypoint_categories, match_policy_item
@@ -189,7 +190,8 @@ def load_json_config(path: Path | None) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict | None = None, external_signal_path: Path | None = None, crash_dir: Path | None = None, sbom_path: Path | None = None) -> tuple[list[Candidate], list[LanguageStat]]:
+def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict | None = None, external_signal_path: Path | None = None, crash_dir: Path | None = None, sbom_path: Path | None = None, *, use_git_history: bool = True) -> tuple[list[Candidate], list[LanguageStat]]:
+    repo_root = repo_root.expanduser().resolve()
     config = config or {}
     language_override = policy_list(policy, 'languages')
     detected_languages = _detect_languages(repo_root)
@@ -208,11 +210,9 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
     language_map: dict[str, str] = {}
     external_index = load_external_signal_index(external_signal_path)
     crash_index = load_crash_signal_index(repo_root, crash_dir)
-    git_index = collect_git_history_signals(repo_root)
+    git_index = collect_git_history_signals(repo_root) if use_git_history else {}
     sbom_index = load_sbom_signal_index(repo_root, sbom_path)
-    for file_path in repo_root.rglob('*'):
-        if not file_path.is_file():
-            continue
+    for file_path in iter_repo_files(repo_root):
         rel_text = str(file_path.relative_to(repo_root)).replace('\\', '/')
         if _should_skip_path(rel_text, include_prefixes, exclude_prefixes, ignore_patterns):
             continue
@@ -223,9 +223,7 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
     semantic_index = build_semantic_index(repo_root, language_map)
 
     candidates: list[Candidate] = []
-    for file_path in repo_root.rglob('*'):
-        if not file_path.is_file():
-            continue
+    for file_path in iter_repo_files(repo_root):
         rel_text = str(file_path.relative_to(repo_root)).replace('\\', '/')
         if _should_skip_path(rel_text, include_prefixes, exclude_prefixes, ignore_patterns):
             continue
@@ -265,9 +263,7 @@ def discover_candidates(repo_root: Path, policy: dict, limit: int, config: dict 
 
 def _detect_languages(repo_root: Path) -> Counter[str]:
     counts: Counter[str] = Counter()
-    for file_path in repo_root.rglob('*'):
-        if not file_path.is_file():
-            continue
+    for file_path in iter_repo_files(repo_root):
         rel_text = str(file_path.relative_to(repo_root)).replace('\\', '/')
         if _matches_excluded_pattern(rel_text):
             continue
@@ -552,15 +548,13 @@ def _detect_repo_context(repo_root: Path, active_languages: set[str], framework_
     repo_signals: list[ExternalSignal] = []
     for language in active_languages:
         for marker in REPO_FILES.get(language, []):
-            candidate = repo_root / marker
-            if candidate.exists():
+            candidate = safe_repo_file(repo_root, Path(marker))
+            if candidate is not None:
                 repo_signals.append(ExternalSignal(source='repo', weight=3, summary=f'manifest:{marker}', metadata={'language': language}))
     sampled_files = 0
-    for file_path in repo_root.rglob('*'):
+    for file_path in iter_repo_files(repo_root):
         if sampled_files >= 200:
             break
-        if not file_path.is_file():
-            continue
         sampled_files += 1
         try:
             text = file_path.read_text(encoding='utf-8', errors='ignore')
@@ -710,6 +704,24 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
             if 'ssrf' in name:
                 sink_kinds.add('outbound request')
 
+    primary_symbols = semantic_meta.symbols[:6] if semantic_meta is not None else []
+    semantic_summary = semantic_meta.summaries[:6] if semantic_meta is not None else []
+    for symbol in primary_symbols[:3]:
+        if 'entrypoint' in symbol.tags:
+            entrypoint_markers.add(symbol.name)
+        if 'authz' in symbol.tags:
+            attack_surfaces.add('authorization boundary')
+        if 'command execution' in symbol.tags:
+            sink_kinds.add('command execution')
+        if 'deserialization' in symbol.tags:
+            sink_kinds.add('unsafe deserialization')
+        if 'filesystem' in symbol.tags:
+            sink_kinds.add('filesystem')
+        if 'memory-sensitive' in symbol.tags:
+            sink_kinds.add('memory-sensitive native path')
+        if 'outbound request' in symbol.tags:
+            sink_kinds.add('outbound request')
+
     provisional_exposure = _infer_exposure(
         rel_path,
         language=language,
@@ -725,7 +737,7 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
         attack_surfaces=sorted(attack_surfaces),
         entrypoint_markers=sorted(entrypoint_markers),
     )
-    symbol_names = [symbol.name for symbol in primary_symbols] if 'primary_symbols' in locals() else []
+    symbol_names = [symbol.name for symbol in primary_symbols]
     for entry in policy_entrypoints:
         if match_policy_item(entry, rel_path=rel_path, categories=entrypoint_categories, sinks=sink_kinds, symbols=symbol_names, kind='entrypoint'):
             score += 7
@@ -772,28 +784,6 @@ def _score_file(*, repo_root: Path, file_path: Path, rel_path: str, language: st
     trimmed_signals = signals[:max_signals_per_file]
     for signal in trimmed_signals:
         reasons.append(f'line {signal.line_no}: {signal.name} (+{signal.weight})')
-
-    primary_symbols = []
-    semantic_summary: list[str] = []
-    if semantic_meta is not None:
-        primary_symbols = semantic_meta.symbols[:6]
-        semantic_summary = semantic_meta.summaries[:6]
-        for symbol in primary_symbols[:3]:
-            if 'entrypoint' in symbol.tags:
-                entrypoint_markers.add(symbol.name)
-            if 'authz' in symbol.tags:
-                attack_surfaces.add('authorization boundary')
-            if any(tag in symbol.tags for tag in ('command execution', 'deserialization', 'filesystem', 'memory-sensitive', 'outbound request')):
-                if 'command execution' in symbol.tags:
-                    sink_kinds.add('command execution')
-                if 'deserialization' in symbol.tags:
-                    sink_kinds.add('unsafe deserialization')
-                if 'filesystem' in symbol.tags:
-                    sink_kinds.add('filesystem')
-                if 'memory-sensitive' in symbol.tags:
-                    sink_kinds.add('memory-sensitive native path')
-                if 'outbound request' in symbol.tags:
-                    sink_kinds.add('outbound request')
 
     subsystem = rel_path.split('/', 1)[0]
     exposure = _infer_exposure(

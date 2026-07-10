@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from oss_harness.models import ExternalSignal
+from oss_harness.paths import iter_repo_files
 
 CRASH_CLASS_PATTERNS = {
     'asan': re.compile(r'addresssanitizer|asan', re.IGNORECASE),
@@ -45,10 +46,10 @@ def load_external_signal_index(path: Path | None) -> dict[str, list[ExternalSign
 def load_crash_signal_index(repo_root: Path, crash_dir: Path | None, max_files: int = 200) -> dict[str, list[ExternalSignal]]:
     if crash_dir is None or not crash_dir.exists():
         return {}
-    repo_files = [path for path in repo_root.rglob('*') if path.is_file()]
+    repo_files = list(iter_repo_files(repo_root))
     path_index = _build_path_index(repo_root, repo_files)
     signals: dict[str, list[ExternalSignal]] = defaultdict(list)
-    for crash_file in sorted(path for path in crash_dir.rglob('*') if path.is_file())[:max_files]:
+    for crash_file in sorted(iter_repo_files(crash_dir))[:max_files]:
         try:
             text = crash_file.read_text(encoding='utf-8', errors='ignore')
         except OSError:

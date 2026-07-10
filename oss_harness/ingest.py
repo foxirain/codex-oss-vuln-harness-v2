@@ -46,6 +46,11 @@ STRUCTURED_FIELDS = {
     ],
 }
 
+PLACEHOLDER_VALUES = {
+    '', '-', 'none', 'n/a', 'na', 'unknown', 'tbd', 'todo', 'not applicable',
+    'not provided', 'no evidence', 'insufficient evidence', 'blocked',
+}
+
 
 def load_response(path: Path | None, stdin_text: str) -> str:
     if path is not None:
@@ -71,6 +76,7 @@ def parse_response(text: str) -> dict:
 
 def _extract_verdict(text: str) -> str:
     lines = text.splitlines()
+    matches: list[str] = []
     for pattern in VERDICT_PATTERNS:
         for index, line in enumerate(lines):
             match = pattern.search(line)
@@ -80,9 +86,12 @@ def _extract_verdict(text: str) -> str:
             if not value and index + 1 < len(lines):
                 value = _extract_bullet_value(lines[index + 1])
             mapped = _map_verdict(value)
-            if mapped:
-                return mapped
-    raise ValueError('could not extract verdict from Codex response')
+            if not mapped:
+                raise ValueError(f'invalid strict verdict value: {value!r}')
+            matches.append(mapped)
+    if len(matches) != 1:
+        raise ValueError(f'expected exactly one strict verdict, found {len(matches)}')
+    return matches[0]
 
 
 def _extract_next_target(text: str) -> str:
@@ -156,4 +165,16 @@ def _map_verdict(value: str) -> str:
 def _promotion_ready(verdict: str, structured: dict[str, str]) -> bool:
     if verdict not in {'cve_candidate', 'plausible_security_bug'}:
         return False
-    return all(structured.get(field, '').strip() for field in ('entrypoint', 'attacker_control', 'sink', 'impact'))
+    return all(
+        _meaningful_value(structured.get(field, ''))
+        for field in ('entrypoint', 'attacker_control', 'sink', 'impact', 'not_blocked_by')
+    )
+
+
+def _meaningful_value(value: str) -> bool:
+    normalized = re.sub(r'\s+', ' ', value.strip().strip('`')).lower().rstrip('.')
+    if normalized in PLACEHOLDER_VALUES:
+        return False
+    if normalized.startswith(('unknown ', 'none ', 'n/a ', 'not provided', 'insufficient evidence')):
+        return False
+    return len(normalized) >= 3

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from oss_harness.paths import safe_repo_file
+
 DEFAULT_POLICY_CANDIDATES = [
     '.codex-harness.md',
     'HARNESS_POLICY.md',
@@ -37,107 +39,62 @@ SECTION_KEYS = {
 
 POLICY_TEMPLATE = '''# Project Policy
 
+<!-- Replace the comments below with project-specific Markdown bullets. Leaving a
+section empty is safe: in particular, an empty Include Paths or Languages section
+does not restrict scanning. Do not leave example values that do not apply. -->
+
 ## Project Summary
-- Describe the product, deployment model, major trust boundaries, and where untrusted input arrives.
-- Note whether the target is a web service, native library, CLI, desktop app, agent, or mixed system.
+<!-- Product, deployment model, trust boundaries, and untrusted inputs. -->
 
 ## In Scope
-- Write vulnerability classes and security boundaries here, not path names.
-- Remote attack surface reachable by unauthenticated or low-privilege users.
-- Privilege boundary mistakes, auth bypass, tenant isolation failures, and trust-boundary violations.
-- Memory corruption, parser bugs, unsafe deserialization, command execution, filesystem trust-boundary bugs, and sandbox escapes.
+<!-- Vulnerability classes and security boundaries; do not put paths here. -->
 
 ## Out of Scope
-- Write excluded bug classes or operational exclusions here, not path names.
-- Denial of service only.
-- Social engineering, non-code issues, or dependency-only issues outside this repository's owned code.
-- Findings the project explicitly documents as accepted risk.
+<!-- Excluded bug classes and operational exclusions; do not put paths here. -->
 
 ## Focus Areas
-- Describe the security-relevant subsystems or workflows to emphasize.
-- Authentication and authorization boundaries.
-- File handling, archive extraction, import or upload pipelines.
-- Command execution, deserialization, templating, native bindings, or trust-material loading.
+<!-- Security-relevant subsystems or workflows. -->
 
 ## Forbidden Findings
-- Write findings that should be rejected even if they look superficially suspicious.
-- Admin-only self-XSS.
-- Theoretical hardening suggestions without a concrete attacker-controlled path.
-- Test-only, example-only, or debug-only findings that do not map to production code reachability.
+<!-- Claims that must be rejected without concrete reachability and impact. -->
 
 ## Entry Points
-- Put real attacker-controlled input entrypoints here: APIs, RPC methods, CLI commands, env vars, file formats, webhooks, bootstrap configs, plugin loaders.
-- /api
-- /graphql
-- webhook handlers
-- import pipeline
+<!-- Real attacker-controlled APIs, parsers, RPCs, CLI inputs, files, or config. -->
 
 ## Include Paths
-- Put only repository paths here. These are the directories or files the harness should analyze.
-- src/
-- app/
-- server/
-- internal/
+<!-- Repository-relative paths only. Leave empty to scan every supported file. -->
 
 ## Exclude Paths
-- Put only repository paths here. These are directories or files the harness should ignore or deprioritize.
-- tests/
-- examples/
-- vendor/
-- dist/
+<!-- Repository-relative paths only. Built-in generated/test exclusions still apply. -->
 
 ## Languages
-- List only languages actually relevant to the vulnerability-hunting target.
-- python
-- go
-- rust
+<!-- Relevant language names. Leave empty to use detected languages. -->
 
 ## Framework Hints
-- List frameworks, runtimes, or protocol stacks that help the scanner infer entrypoints.
-- fastapi
-- django
-- express
+<!-- Framework, runtime, or protocol-stack names. -->
 
 ## Hot Paths
-- Put only high-priority repository paths or exact files here. These are not bug classes.
-- auth/
-- upload/
-- parser/
+<!-- High-priority repository-relative directories or exact files. -->
 
 ## Preferred Sinks
-- Put sink categories here, not paths.
-- command execution
-- unsafe deserialization
-- filesystem
-- memory-sensitive native path
+<!-- Sink categories, such as command execution, filesystem, or deserialization. -->
 
 ## Preferred Bug Classes
-- Put realistic bug classes here, not files or subsystems.
-- authz bypass
-- path traversal
-- ssrf
-- rce
-- uaf
+<!-- Realistic bug classes, such as authz bypass, traversal, SSRF, RCE, or UAF. -->
 
 ## Ignore Patterns
-- Put free-form text or path fragments here that should reduce noise.
-- accepted-risk
-- wontfix
-- generated/
+<!-- Free-form text or repository-relative path fragments that reduce noise. -->
 
 ## Notes
-- Record policy constraints, reporting standards, or ambiguous areas.
-- Require concrete reachability and security impact.
-- Keep `In Scope` for vulnerability classes, `Include Paths` for repository paths, `Hot Paths` for high-priority files or directories, and `Entry Points` for real attacker-controlled inputs.
-- Prefer findings that can plausibly become a CVE or a high-confidence advisory.
+<!-- Reporting constraints and ambiguous areas. -->
 '''
 
 
 
 def find_default_policy(repo_root: Path) -> Path | None:
     for name in DEFAULT_POLICY_CANDIDATES:
-        candidate = repo_root / name
-        if candidate.exists():
+        candidate = safe_repo_file(repo_root, Path(name))
+        if candidate is not None:
             return candidate
     return None
 
@@ -188,8 +145,16 @@ def _empty_policy() -> dict:
 def _parse_markdown_policy(text: str) -> dict:
     policy = _empty_policy()
     current_key: str | None = None
+    in_comment = False
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if in_comment:
+            if '-->' in line:
+                in_comment = False
+            continue
+        if line.startswith('<!--'):
+            in_comment = '-->' not in line
+            continue
         if not line:
             continue
         heading = re.match(r'^#{1,6}\s+(.*)$', line)

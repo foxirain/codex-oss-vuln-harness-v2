@@ -76,6 +76,7 @@ class BenchmarkTests(unittest.TestCase):
                     {
                         'name': 'demo',
                         'repo_root': str(repo),
+                        'signals_json': str(repo / 'external_signals_test.json'),
                         'known_good': ['src/parser.cc'],
                         'known_bad': [],
                     }
@@ -86,7 +87,29 @@ class BenchmarkTests(unittest.TestCase):
             self.assertIn('blind', result['cases'][0]['modes'])
             self.assertIn('signal', result['cases'][0]['modes'])
             self.assertIn('dual', result['cases'][0]['modes'])
-            self.assertIsNotNone(result['analysis']['best_mode_by_labeled_precision'])
+            self.assertIsNotNone(result['analysis']['best_mode_by_labeled_hotspot_precision'])
+            self.assertTrue(result['provenance']['corpus_sha256'])
+            self.assertTrue(result['cases'][0]['provenance']['inputs']['signals']['sha256'])
+            self.assertGreater(sum(result['cases'][0]['modes']['blind']['prompt_profile_mix'].values()), 0)
+
+    def test_directory_labels_use_prefix_semantics_without_precision_overflow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / 'repo'
+            (repo / 'src' / 'nested').mkdir(parents=True)
+            (repo / 'src' / 'nested' / 'parser.cc').write_text(
+                'int parse(char* out, const char* in) { memcpy(out, in, 64); return 0; }\n',
+                encoding='utf-8',
+            )
+            corpus = root / 'benchmark.json'
+            corpus.write_text(json.dumps({'cases': [{
+                'repo_root': str(repo), 'known_good': ['src/'], 'top_k': 10,
+            }]}), encoding='utf-8')
+            result = run_benchmark_modes(corpus)
+            for mode in ('blind', 'signal', 'dual'):
+                metrics = result['cases'][0]['modes'][mode]
+                self.assertLessEqual(metrics['labeled_hotspot_precision'], 1.0)
+                self.assertEqual(metrics['labeled_hotspot_recall'], 1.0)
 
 
 if __name__ == '__main__':

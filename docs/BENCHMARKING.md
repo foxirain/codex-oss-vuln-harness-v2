@@ -17,13 +17,19 @@ This is the only reliable way to improve the harness across diverse OSS targets.
 For each mode it reports:
 
 - `candidate_count`
-- `top_k_precision`
-- `top_k_recall`
+- `labeled_hotspot_precision`
+- `labeled_hotspot_recall`
 - `known_good_hits`
 - `known_bad_hits`
 - `bad_hit_count`
 - `exposure_mix`
 - `prompt_profile_mix`
+
+The precision and recall fields above measure path ranking against
+analyst-supplied hotspot labels. They are not vulnerability-detection precision
+or recall. `review_confirmation_rate` likewise means the fraction of reviewed
+promotions assigned B or higher by the review stage; it is not human
+ground-truth precision.
 
 It also reports overlap and novelty:
 
@@ -92,10 +98,10 @@ Optional helper:
 For each repository:
 
 ```bash
-python3 -m oss_harness bootstrap /work/bench/<repo> --dangerously-bypass-approvals-and-sandbox
+python3 -m oss_harness bootstrap /work/bench/<repo>
 ```
 
-If you want SBOM-aware runs, generate an SBOM such as `sbom.json` in the repository root.
+If you want SBOM-aware runs, generate an SBOM and record its path explicitly in the corpus case.
 
 ### 3. Run the benchmark
 

@@ -7,12 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from oss_harness.ingest import parse_response
+from oss_harness.paths import validate_repo_target
 from oss_harness.prompting import should_attach_snippet
-from oss_harness.session import completed_ranks, load_state, record_review, response_archive_dir, response_path, save_state, set_pending_review
+from oss_harness.session import clear_manual_followup, completed_ranks, exclusive_response_lock, failed_ranks, load_state, record_attempt_failure, record_review, response_archive_dir, response_path, set_pending_review
 
-PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 MAX_MANUAL_FOLLOWUPS = 2
 MAX_SAME_TARGET_ATTEMPTS = 3
+MAX_OPERATIONAL_RETRIES = 3
 STALLING_VERDICTS = {'needs_more_context', 'not_cve_candidate'}
 STRONG_FINDING_VERDICTS = {'cve_candidate', 'plausible_security_bug'}
 MAX_SUBSYSTEM_STALLS = 4
@@ -21,8 +22,28 @@ AUTOPILOT_DIRNAME = 'autopilot'
 
 def run_autopilot(session_dir: Path, *, include_snippet: bool, duration_spec: str, per_run_timeout_spec: str, model: str, sandbox: str, full_auto: bool, unsafe_bypass: bool, stop_on_finding: bool) -> int:
     session_dir = session_dir.expanduser().resolve()
+    try:
+        with exclusive_response_lock(session_dir):
+            return _run_autopilot_locked(
+                session_dir,
+                include_snippet=include_snippet,
+                duration_spec=duration_spec,
+                per_run_timeout_spec=per_run_timeout_spec,
+                model=model,
+                sandbox=sandbox,
+                full_auto=full_auto,
+                unsafe_bypass=unsafe_bypass,
+                stop_on_finding=stop_on_finding,
+            )
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _run_autopilot_locked(session_dir: Path, *, include_snippet: bool, duration_spec: str, per_run_timeout_spec: str, model: str, sandbox: str, full_auto: bool, unsafe_bypass: bool, stop_on_finding: bool) -> int:
     manifest = _load_manifest(session_dir)
     autopilot_dir = session_dir / AUTOPILOT_DIRNAME
+    if autopilot_dir.is_symlink():
+        raise SystemExit(f'autopilot output directory must not be a symlink: {autopilot_dir}')
     prompts_dir = autopilot_dir / 'prompts'
     exec_dir = autopilot_dir / 'exec'
     findings_dir = autopilot_dir / 'findings'
@@ -37,6 +58,7 @@ def run_autopilot(session_dir: Path, *, include_snippet: bool, duration_spec: st
     started_at = datetime.now(UTC)
     deadline = time.monotonic() + duration_seconds
     run_index = _existing_run_count(prompts_dir)
+    terminal_failure_seen = bool(load_state(session_dir).get('terminal_failures'))
 
     _append_text(progress_path, f"\n== AUTOPILOT START {started_at.strftime('%Y-%m-%d %H:%M:%SZ')} ==\nsession={session_dir}\nrepo_root={manifest.get('repo_root', '')}\nduration={duration_spec}\nper_run_timeout={per_run_timeout_spec}\ninclude_snippet={int(include_snippet)}\nmodel={model or '<default>'}\n")
     _write_status(status_path, stage='starting', session_dir=session_dir, repo_root=manifest.get('repo_root', ''), started_at=started_at, duration_spec=duration_spec, runs=run_index, candidate_count=manifest.get('candidate_count', 0))
@@ -44,10 +66,11 @@ def run_autopilot(session_dir: Path, *, include_snippet: bool, duration_spec: st
     while time.monotonic() < deadline:
         result = _ingest_pending_response(session_dir, findings_dir, findings_path, progress_path)
         if result is not None:
+            terminal_failure_seen = terminal_failure_seen or bool(result.get('terminal_failure'))
             _write_status(status_path, stage='ingested', session_dir=session_dir, repo_root=manifest.get('repo_root', ''), started_at=started_at, duration_spec=duration_spec, runs=run_index, last_target=result['target'], last_verdict=result['verdict'], last_next_target=result['next_target'], completed=len(load_state(session_dir).get('history', [])), subsystem_stalls=len(_stalled_subsystems(load_state(session_dir), manifest)))
-            if stop_on_finding and result['verdict'] in STRONG_FINDING_VERDICTS:
+            if stop_on_finding and result.get('promotion_ready'):
                 _append_text(progress_path, 'stop_reason=strong_finding_detected\n')
-                return 0
+                return 1 if terminal_failure_seen or load_state(session_dir).get('retry_counts') else 0
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -58,7 +81,7 @@ def run_autopilot(session_dir: Path, *, include_snippet: bool, duration_spec: st
         except SystemExit as exc:
             _append_text(progress_path, f'stop_reason={exc}\n')
             _write_status(status_path, stage='finished', session_dir=session_dir, repo_root=manifest.get('repo_root', ''), started_at=started_at, duration_spec=duration_spec, runs=run_index)
-            return 0
+            return 1 if terminal_failure_seen or load_state(session_dir).get('retry_counts') else 0
 
         run_index += 1
         prompt_path = prompts_dir / f'run-{run_index:04d}.prompt.txt'
@@ -74,18 +97,48 @@ def run_autopilot(session_dir: Path, *, include_snippet: bool, duration_spec: st
 
         proc = _run_codex_exec(repo_root=next_prompt['repo_root'], prompt_text=prompt_text, response_file=response_path(session_dir), stdout_path=stdout_path, stderr_path=stderr_path, timeout_seconds=max(1, min(int(remaining), per_run_timeout_seconds)), model=model, sandbox=sandbox, full_auto=full_auto, unsafe_bypass=unsafe_bypass)
         _append_text(progress_path, f'codex_exit_code={proc.returncode}\nstdout_file={stdout_path}\nstderr_file={stderr_path}\n')
-        if proc.returncode != 0 and not _has_nonempty_response(response_path(session_dir)):
-            _append_text(progress_path, 'stop_reason=codex_exec_failed_without_response\n')
-            return proc.returncode or 1
+        if proc.returncode != 0:
+            fixed_response = response_path(session_dir)
+            if _has_nonempty_response(fixed_response):
+                archive_path = _archive_response_file(session_dir, fixed_response)
+                _append_text(progress_path, f'discarded_nonzero_response={archive_path}\n')
+            failure_kind = 'timeout' if proc.returncode == 124 else 'codex_exec_nonzero'
+            _, terminal, attempts = record_attempt_failure(
+                session_dir,
+                rank=next_prompt['rank'],
+                target=next_prompt['target'],
+                kind=failure_kind,
+                detail=f'returncode={proc.returncode}',
+                max_attempts=MAX_OPERATIONAL_RETRIES,
+            )
+            terminal_failure_seen = terminal_failure_seen or terminal
+            _append_text(progress_path, f'operational_failure={failure_kind}\nretry_attempt={attempts}\nterminal_failure={int(terminal)}\n')
+            continue
+        if not _has_nonempty_response(response_path(session_dir)):
+            _, terminal, attempts = record_attempt_failure(
+                session_dir,
+                rank=next_prompt['rank'],
+                target=next_prompt['target'],
+                kind='missing_response',
+                detail='codex exited zero without a response file',
+                max_attempts=MAX_OPERATIONAL_RETRIES,
+            )
+            terminal_failure_seen = terminal_failure_seen or terminal
+            _append_text(progress_path, f'operational_failure=missing_response\nretry_attempt={attempts}\nterminal_failure={int(terminal)}\n')
 
-    _ingest_pending_response(session_dir, findings_dir, findings_path, progress_path)
+    final_result = _ingest_pending_response(session_dir, findings_dir, findings_path, progress_path)
+    terminal_failure_seen = terminal_failure_seen or bool(final_result and final_result.get('terminal_failure'))
     _write_status(status_path, stage='finished', session_dir=session_dir, repo_root=manifest.get('repo_root', ''), started_at=started_at, duration_spec=duration_spec, runs=run_index)
     _append_text(progress_path, f"== AUTOPILOT END {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')} ==\n")
-    return 0
+    return 1 if terminal_failure_seen or load_state(session_dir).get('retry_counts') else 0
 
 
 def _run_codex_exec(*, repo_root: str, prompt_text: str, response_file: Path, stdout_path: Path, stderr_path: Path, timeout_seconds: int, model: str, sandbox: str, full_auto: bool, unsafe_bypass: bool) -> subprocess.CompletedProcess[str]:
-    cmd = ['codex', 'exec', '-C', repo_root, '--skip-git-repo-check', '--add-dir', str(PACKAGE_ROOT), '-o', str(response_file), '--color', 'never']
+    for stale in (response_file, stdout_path, stderr_path):
+        stale.unlink(missing_ok=True)
+    if full_auto and sandbox == 'read-only' and not unsafe_bypass:
+        raise ValueError('--full-auto requires an explicitly writable sandbox')
+    cmd = ['codex', 'exec', '-C', repo_root, '--skip-git-repo-check', '-o', str(response_file), '--color', 'never']
     if unsafe_bypass:
         cmd.append('--dangerously-bypass-approvals-and-sandbox')
     else:
@@ -95,13 +148,18 @@ def _run_codex_exec(*, repo_root: str, prompt_text: str, response_file: Path, st
     if model:
         cmd.extend(['-m', model])
     try:
-        proc = subprocess.run(cmd, input=prompt_text, text=True, capture_output=True, cwd=str(PACKAGE_ROOT), timeout=timeout_seconds, check=False)
+        proc = subprocess.run(cmd, input=prompt_text, text=True, capture_output=True, cwd=repo_root, timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired as exc:
         stdout_text = _ensure_text(exc.stdout)
         stderr_text = _ensure_text(exc.stderr) + '\nTIMEOUT\n'
         stdout_path.write_text(stdout_text, encoding='utf-8')
         stderr_path.write_text(stderr_text, encoding='utf-8')
         return subprocess.CompletedProcess(cmd, 124, stdout_text, stderr_text)
+    except OSError as exc:
+        stderr_text = f'EXEC_ERROR: {exc}\n'
+        stdout_path.write_text('', encoding='utf-8')
+        stderr_path.write_text(stderr_text, encoding='utf-8')
+        return subprocess.CompletedProcess(cmd, 127, '', stderr_text)
     stdout_path.write_text(proc.stdout or '', encoding='utf-8')
     stderr_path.write_text(proc.stderr or '', encoding='utf-8')
     return proc
@@ -111,18 +169,35 @@ def _ingest_pending_response(session_dir: Path, findings_dir: Path, findings_pat
     fixed_response = response_path(session_dir)
     state = load_state(session_dir)
     pending_target = (state.get('pending_target') or '').strip()
-    if not pending_target or not fixed_response.exists() or fixed_response.stat().st_size == 0:
+    if not pending_target:
+        if _has_nonempty_response(fixed_response):
+            archive_path = _archive_response_file(session_dir, fixed_response)
+            _append_text(progress_path, f'unmatched_response_archived={archive_path}\n')
+        return None
+    if not fixed_response.exists() or fixed_response.stat().st_size == 0:
         return None
     text = fixed_response.read_text(encoding='utf-8')
     try:
         parsed = parse_response(text)
+        if parsed['verdict'] in STRONG_FINDING_VERDICTS and not parsed.get('promotion_ready'):
+            raise ValueError('strong verdict is missing meaningful structured proof fields')
+        next_target = parsed['next_target'] if parsed['should_continue'] else ''
+        if next_target:
+            repo_root = Path(_load_manifest(session_dir)['repo_root']).expanduser().resolve()
+            next_target = validate_repo_target(repo_root, next_target)
     except ValueError as exc:
         archive_path = _archive_response_file(session_dir, fixed_response)
-        record_review(session_dir=session_dir, rank=state.get('pending_rank'), target=pending_target, verdict='needs_more_context', notes=f'parse_error: {exc}', next_target='', next_prompt='', auto_advance=True)
-        _append_text(progress_path, f'ingested_target={pending_target}\ningested_verdict=needs_more_context\nresponse_archive={archive_path}\n')
-        return {'target': pending_target, 'rank': state.get('pending_rank'), 'verdict': 'needs_more_context', 'next_target': ''}
+        _, terminal, attempts = record_attempt_failure(
+            session_dir,
+            rank=state.get('pending_rank'),
+            target=pending_target,
+            kind='response_schema_error',
+            detail=str(exc),
+            max_attempts=MAX_OPERATIONAL_RETRIES,
+        )
+        _append_text(progress_path, f'ingested_target={pending_target}\noperational_failure=response_schema_error\nretry_attempt={attempts}\nterminal_failure={int(terminal)}\nresponse_archive={archive_path}\n')
+        return {'target': pending_target, 'rank': state.get('pending_rank'), 'verdict': '', 'next_target': '', 'terminal_failure': terminal}
 
-    next_target = parsed['next_target'] if parsed['should_continue'] else ''
     current_attempts = _target_attempts(state, pending_target)
     if next_target and int(state.get('manual_followup_depth', 0)) >= MAX_MANUAL_FOLLOWUPS:
         next_target = ''
@@ -132,8 +207,6 @@ def _ingest_pending_response(session_dir: Path, findings_dir: Path, findings_pat
         next_target = ''
     notes = parsed['notes']
     promotion_ready = bool(parsed.get('promotion_ready'))
-    if parsed['verdict'] in STRONG_FINDING_VERDICTS and not promotion_ready:
-        notes = f"{notes} promotion_blocked: missing structured proof fields".strip()
     record_review(session_dir=session_dir, rank=state.get('pending_rank'), target=pending_target, verdict=parsed['verdict'], notes=notes, next_target=next_target, next_prompt='', auto_advance=True)
     archive_path = _archive_response_file(session_dir, fixed_response)
     _append_text(progress_path, f"ingested_target={pending_target}\ningested_verdict={parsed['verdict']}\ningested_next_target={next_target}\npromotion_ready={int(promotion_ready)}\nresponse_archive={archive_path}\n")
@@ -142,7 +215,7 @@ def _ingest_pending_response(session_dir: Path, findings_dir: Path, findings_pat
         finding_text = _render_promoted_finding(text=text, target=pending_target, parsed=parsed)
         finding_path.write_text(finding_text, encoding='utf-8')
         _append_text(findings_path, f"\n== FINDING {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%SZ')} ==\ntarget={pending_target}\nverdict={parsed['verdict']}\ndetails={finding_path}\narchive={archive_path}\n")
-    return {'target': pending_target, 'rank': state.get('pending_rank'), 'verdict': parsed['verdict'], 'next_target': next_target}
+    return {'target': pending_target, 'rank': state.get('pending_rank'), 'verdict': parsed['verdict'], 'next_target': next_target, 'promotion_ready': promotion_ready}
 
 
 def _archive_response_file(session_dir: Path, fixed_response: Path) -> Path:
@@ -159,11 +232,15 @@ def _render_next_prompt(session_dir: Path, *, include_snippet: bool) -> dict:
     manual_target = (state.get('manual_next_target') or '').strip()
     manual_prompt = (state.get('manual_next_prompt') or '').strip()
     depth = int(state.get('manual_followup_depth', 0))
+    if manual_target:
+        try:
+            manual_target = validate_repo_target(Path(manifest['repo_root']), manual_target)
+        except ValueError:
+            manual_target = ''
+            manual_prompt = ''
+            state = clear_manual_followup(session_dir)
     if manual_target and (depth >= MAX_MANUAL_FOLLOWUPS or _target_attempts(state, manual_target) >= MAX_SAME_TARGET_ATTEMPTS or _is_target_in_stalled_subsystem(manual_target, state, manifest)):
-        state['manual_next_target'] = ''
-        state['manual_next_prompt'] = ''
-        state['manual_followup_depth'] = 0
-        save_state(session_dir, state)
+        state = clear_manual_followup(session_dir)
         manual_target = ''
         manual_prompt = ''
     if manual_target:
@@ -173,14 +250,18 @@ def _render_next_prompt(session_dir: Path, *, include_snippet: bool) -> dict:
         return {'repo_root': manifest['repo_root'], 'prompt': prompt, 'prompt_source': prompt_source, 'snippet_path': None, 'include_snippet': False, 'target': manual_target, 'rank': None}
 
     rank, candidate = _next_pending_rank(state, manifest)
-    prompt_path, snippet_path = _bundle_paths(session_dir, rank, candidate['path'])
+    repo_root = Path(manifest['repo_root']).expanduser().resolve()
+    target = validate_repo_target(repo_root, str(candidate.get('path', '')))
+    if '::' in target:
+        raise SystemExit('ranked manifest targets must identify files, not symbols')
+    prompt_path, snippet_path = _bundle_paths(session_dir, rank, target)
     if not prompt_path.exists():
         raise SystemExit(f'missing prompt bundle for rank {rank}: {prompt_path}. Rerun oss-harness scan for this repository and use the new session directory.')
     prompt = prompt_path.read_text(encoding='utf-8')
-    set_pending_review(session_dir, rank, candidate['path'], str(prompt_path))
-    target_attempts = _target_attempts(state, candidate['path'])
+    set_pending_review(session_dir, rank, target, str(prompt_path))
+    target_attempts = _target_attempts(state, target)
     snippet_enabled = should_attach_snippet(candidate, requested=include_snippet, attempt=target_attempts)
-    return {'repo_root': manifest['repo_root'], 'prompt': prompt, 'prompt_source': prompt_path, 'snippet_path': snippet_path, 'include_snippet': snippet_enabled, 'target': candidate['path'], 'rank': rank, 'prompt_profile': candidate.get('prompt_profile', '')}
+    return {'repo_root': str(repo_root), 'prompt': prompt, 'prompt_source': prompt_path, 'snippet_path': snippet_path, 'include_snippet': snippet_enabled, 'target': target, 'rank': rank, 'prompt_profile': candidate.get('prompt_profile', '')}
 
 
 def _build_autopilot_prompt(rendered: dict) -> str:
@@ -197,7 +278,8 @@ def _build_autopilot_prompt(rendered: dict) -> str:
         '- use only the exact label; do not add suffixes or prose on the verdict line',
         '',
         'Single best next target:',
-        '- <file/function>',
+        '- <repository-relative-file>::<optional_symbol>',
+        '- never use an absolute path, `..`, a URI, or a symlink',
         '- use `none` if this branch should stop and the harness should move to the next ranked target',
         '',
         'Structured summary:',
@@ -256,7 +338,7 @@ def _render_promoted_finding(*, text: str, target: str, parsed: dict) -> str:
 
 
 def _next_pending_rank(state: dict, manifest: dict) -> tuple[int, dict]:
-    done = completed_ranks(state)
+    done = completed_ranks(state) | failed_ranks(state)
     candidates = manifest.get('candidates', [])
     start = max(1, int(state.get('current_rank', 1)))
     for rank in range(start, len(candidates) + 1):
@@ -344,6 +426,8 @@ def _write_status(path: Path, **fields: object) -> None:
 
 def _parse_duration(spec: str) -> int:
     spec = spec.strip().lower()
+    if not spec:
+        raise ValueError('duration must not be empty')
     units = {'s': 1, 'm': 60, 'h': 3600}
     if spec[-1] in units:
         return max(1, int(float(spec[:-1]) * units[spec[-1]]))

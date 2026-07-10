@@ -4,6 +4,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from oss_harness.paths import safe_repo_file
+
 AUTOPILOT_FINDINGS_DIRNAME = 'autopilot/findings'
 
 
@@ -15,7 +17,7 @@ def list_finding_files(session_dir: Path) -> list[Path]:
     base = finding_dir(session_dir)
     if not base.exists():
         return []
-    return sorted(path for path in base.glob('finding-*.txt') if path.is_file())
+    return sorted(path for path in base.glob('finding-*.txt') if safe_repo_file(base, path) is not None)
 
 
 def select_finding_files(session_dir: Path, selectors: list[str] | None = None) -> list[Path]:
@@ -26,7 +28,9 @@ def select_finding_files(session_dir: Path, selectors: list[str] | None = None) 
     for selector in selectors:
         selector_path = Path(selector)
         if selector_path.exists():
-            selected.append(selector_path.expanduser().resolve())
+            safe_path = safe_repo_file(finding_dir(session_dir), selector_path.expanduser().resolve())
+            if safe_path is not None:
+                selected.append(safe_path)
             continue
         for candidate in files:
             if selector == candidate.name or selector == candidate.stem or selector in candidate.name:
