@@ -426,7 +426,7 @@ bash -n scripts/*.sh
 
 v2에서 가장 중요한 변화는 “External Signal을 더 많이 넣는 것”이 아니라 **신호를 넣은 결과와 넣지 않은 결과를 분리해 비교한 것**이다. Blind arm은 source-driven baseline을 보존하고, signal arm은 evidence가 attention을 어디로 이동시키는지 보여주며, dual arm은 어느 한쪽의 ranking을 진실로 간주하지 않는다.
 
-후속 [Adaptive Codex OSS Vulnerability Harness](https://github.com/FoxCompany-foxirain/ossharness-base-engine-testcoldv3)는 이 구조를 fixed high-priority prefix, adaptive tail exploration과 multi-session merge로 확장한다. 두 distribution은 Python import package 이름 `oss_harness`를 공유하므로 별도 virtual environment에 설치해야 한다.
+후속 [Adaptive Codex OSS Vulnerability Harness](https://github.com/foxirain/codex-adaptive-oss-vuln-harness)는 이 구조를 fixed high-priority prefix, adaptive tail exploration과 multi-session merge로 확장한다. 두 distribution은 Python import package 이름 `oss_harness`를 공유하므로 별도 virtual environment에 설치해야 한다.
 
 지금 다시 v2를 설계한다면 다음을 우선한다.
 
@@ -491,4 +491,4 @@ v2에서 가장 중요한 변화는 “External Signal을 더 많이 넣는 것�
 
 [4] NamelessMC, “OAuth callback state is not validated, allowing login CSRF / session swapping,” GitHub Security Advisory GHSA-pmpw-2xvh-5xj6, 2026. <https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6>
 
-[5] foxirain, “Adaptive Codex OSS Vulnerability Harness,” GitHub repository. <https://github.com/FoxCompany-foxirain/ossharness-base-engine-testcoldv3>
+[5] foxirain, “Adaptive Codex OSS Vulnerability Harness,” GitHub repository. <https://github.com/foxirain/codex-adaptive-oss-vuln-harness>
