@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/foxirain/codex-oss-vuln-harness-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/foxirain/codex-oss-vuln-harness-v2/actions/workflows/ci.yml)
 
-<p align="center"><strong>Research Tool · Standalone Import: 5 April 2026 · Documentation Revision: 11 July 2026</strong></p>
+<p align="center"><strong>Research Tool · Standalone Import: 5 April 2026 · Documentation Revision: 25 July 2026</strong></p>
 
 <p align="center"><strong>Core Philosophy — External Signal</strong><br>Use evidence outside model inference as a controlled search variable; let it allocate attention, never establish proof.</p>
 
-> **Project status.** 이 저장소는 일반 OSS 취약점 조사를 위해 실제로 구축하고 사용한 LLM-assisted research harness의 초기 generalized lineage를 보존한다. 이 lineage는 공개된 세 건의 CVE 조사에 사용됐으며, 별도 세 건은 현재 coordinated disclosure 절차에 있다. 하네스는 취약점을 자동으로 확정하지 않는다. 후보 우선순위화 이후의 reachability 분석, 재현, 영향 검증과 disclosure는 사람이 수행했다.
+> **Project status.** 이 저장소는 일반 OSS 취약점 조사를 위해 실제로 구축하고 사용한 LLM-assisted research harness의 초기 generalized lineage를 보존한다. 이 lineage는 공개된 세 건의 CVE 조사와 upstream publication을 기다리는 식별자 부여 CVE 세 건의 조사에 사용됐다. 하네스는 취약점을 자동으로 확정하지 않는다. 후보 우선순위화 이후의 reachability 분석, 재현, 영향 검증과 disclosure는 사람이 수행했다.
 >
 > 공개 Git 이력은 2026년 4월 5일의 standalone import부터 시작하므로 이를 workflow의 최초 생성일로 해석해서는 안 된다. 또한 당시 iteration 과정의 per-finding session log가 일관되게 보존되지 않아, 이 문서는 각 CVE를 사후적으로 `blind`, `signal`, `dual` 중 특정 실행 모드에 귀속하지 않는다.
 
@@ -350,16 +350,19 @@ Dual scan은 `artifacts/dual-session-<timestamp>/{blind,signal,merged}/` 구조�
 
 하네스 lineage는 조사 후보를 좁히고 source-level hypothesis를 반복하는 데 사용됐다. 최종 claim은 사람이 환경을 구성하고 positive·negative case를 비교한 뒤 maintainer에게 보고했다.
 
-### A. Coordinated Disclosure
+### A. Assigned CVEs Pending Upstream Publication
 
-동일한 초기 research workflow에서 발견된 추가 세 건은 현재 coordinated disclosure 절차에 있다. 영향받는 프로젝트, identifier, bug class와 기술적 세부사항은 해당 프로젝트의 공식 publication 또는 명시적인 공개 허가 이후 추가한다.
+동일한 초기 research workflow에서 발견된 추가 세 건은 CVE 식별자가 부여됐으며 식별자 공개가 허용된 상태다. 다만 upstream advisory가 아직 공개되지 않았으므로 대상은 일반적인 제품 범주로만 표시하고, bug class·영향·재현·patch 등 기술적 세부사항은 공식 publication 이후 추가한다.
 
-```text
-Additional findings under coordinated disclosure: 3
-Public identifiers and technical details: intentionally withheld
-```
+**TABLE IV — ASSIGNED IDENTIFIERS PENDING UPSTREAM PUBLICATION**
 
-이 세 건은 공개되기 전까지 위 공개 CVE 표와 public CVE count에 포함하지 않는다.
+| Assigned identifier | Target description | Publication state | Detail boundary |
+| --- | --- | --- | --- |
+| CVE-2026-33546 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33547 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-41210 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
+
+이 세 건은 연구 성과의 assigned CVE로 기록하되, upstream advisory가 공개되기 전까지 위 public outcome 표와 공개 CVE 소계에는 포함하지 않는다.
 
 ## VII. Engineering Verification
 
@@ -446,7 +449,7 @@ v2에서 가장 중요한 변화는 “External Signal을 더 많이 넣는 것�
 
 `Codex OSS Vulnerability Harness v2`는 일반 OSS 취약점 분석을 대체하는 autonomous scanner가 아니다. 이 프로젝트는 다양한 language와 framework의 공격면을 설명 가능한 candidate ranking으로 축소하고, External Signal을 통제 변수로 분리하며, LLM review를 strict evidence contract와 bounded state machine 안에 둔다.
 
-이 workflow의 초기 lineage는 실제 OSS 조사에서 세 건의 공개 CVE로 이어졌고, 추가 세 건은 coordinated disclosure 중이다. 프로젝트가 보여주는 핵심은 CVE 수 자체만이 아니다. **모델의 confidence보다 external evidence, differential validation, falsification과 human proof를 우선한 연구 방법**을 실제 disclosure workflow에 적용했다는 점이다.
+이 workflow의 초기 lineage는 실제 OSS 조사에서 세 건의 공개 CVE와 upstream publication을 기다리는 식별자 부여 CVE 세 건으로 이어졌다. 프로젝트가 보여주는 핵심은 CVE 수 자체만이 아니다. **모델의 confidence보다 external evidence, differential validation, falsification과 human proof를 우선한 연구 방법**을 실제 disclosure workflow에 적용했다는 점이다.
 
 ## Appendix A. Repository Layout
 
