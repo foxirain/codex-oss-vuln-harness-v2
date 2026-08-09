@@ -495,3 +495,7 @@ v2에서 가장 중요한 변화는 “External Signal을 더 많이 넣는 것�
 [4] NamelessMC, “OAuth callback state is not validated, allowing login CSRF / session swapping,” GitHub Security Advisory GHSA-pmpw-2xvh-5xj6, 2026. <https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6>
 
 [5] foxirain, “Adaptive Codex OSS Vulnerability Harness,” GitHub repository. <https://github.com/foxirain/codex-adaptive-oss-vuln-harness>
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
