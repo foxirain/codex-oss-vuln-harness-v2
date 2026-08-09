@@ -342,9 +342,9 @@ Dual scan은 `artifacts/dual-session-<timestamp>/{blind,signal,merged}/` 구조�
 
 | Public outcome | Project | Severity / CVSS | Publicly documented security boundary | Validation pattern |
 | --- | --- | --- | --- | --- |
-| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | **High · 8.5 · CVSS 3.1** (GHSA) | Private-IP literal filtering과 internal-hostname resolution 사이의 SSRF destination mismatch | Direct private IP와 동일 internal destination을 가리키는 hostname의 differential validation |
-| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | **Moderate · 6.5 · CVSS 3.1** (GHSA) | API와 web detail view 사이의 private-note authorization inconsistency | 두 사용자와 두 interface를 이용한 visibility matrix 검증 |
-| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | **Moderate · 5.4 · CVSS 3.1** (GHSA) | OAuth authorization request와 callback 사이의 server-side `state` binding 부재 | 두 browser session을 이용한 callback replay와 session-swapping 검증 |
+| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | ![High](https://img.shields.io/badge/High-C2410C?style=flat-square) **8.5 · CVSS 3.1** (GHSA) | Private-IP literal filtering과 internal-hostname resolution 사이의 SSRF destination mismatch | Direct private IP와 동일 internal destination을 가리키는 hostname의 differential validation |
+| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | ![Moderate](https://img.shields.io/badge/Moderate-8A6500?style=flat-square) **6.5 · CVSS 3.1** (GHSA) | API와 web detail view 사이의 private-note authorization inconsistency | 두 사용자와 두 interface를 이용한 visibility matrix 검증 |
+| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | ![Moderate](https://img.shields.io/badge/Moderate-8A6500?style=flat-square) **5.4 · CVSS 3.1** (GHSA) | OAuth authorization request와 callback 사이의 server-side `state` binding 부재 | 두 browser session을 이용한 callback replay와 session-swapping 검증 |
 
 <details>
 <summary><strong>CVSS 출처 (2026-08-09 확인)</strong></summary>
@@ -370,9 +370,9 @@ Dual scan은 `artifacts/dual-session-<timestamp>/{blind,signal,merged}/` 구조�
 
 | Assigned identifier | Target description | Severity / CVSS | Publication state | Detail boundary |
 | --- | --- | --- | --- | --- |
-| CVE-2026-33546 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-33547 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-41210 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33546 | Streaming software | ![Not publicly scored](https://img.shields.io/badge/Not_publicly_scored-6B7280?style=flat-square) | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33547 | Streaming software | ![Not publicly scored](https://img.shields.io/badge/Not_publicly_scored-6B7280?style=flat-square) | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-41210 | Streaming software | ![Not publicly scored](https://img.shields.io/badge/Not_publicly_scored-6B7280?style=flat-square) | Upstream publication pending | Technical details intentionally omitted |
 
 <details>
 <summary><strong>CVSS 출처 (2026-08-09 확인)</strong></summary>

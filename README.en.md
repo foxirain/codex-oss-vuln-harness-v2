@@ -342,9 +342,9 @@ This repository preserves the early lineage of a real OSS security-research work
 
 | Public outcome | Project | Severity / CVSS | Publicly documented security boundary | Validation pattern |
 | --- | --- | --- | --- | --- |
-| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | **High · 8.5 · CVSS 3.1** (GHSA) | SSRF destination mismatch between private-IP literal filtering and internal-hostname resolution | Differential validation of a direct private IP and a hostname resolving to the same internal destination |
-| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | **Moderate · 6.5 · CVSS 3.1** (GHSA) | Private-note authorization inconsistency between the API and web detail view | Visibility-matrix validation using two users and two interfaces |
-| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | **Moderate · 5.4 · CVSS 3.1** (GHSA) | Missing server-side `state` binding between OAuth authorization request and callback | Callback replay and session-swapping validation using two browser sessions |
+| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | ![High](https://img.shields.io/badge/High-C2410C?style=flat-square) **8.5 · CVSS 3.1** (GHSA) | SSRF destination mismatch between private-IP literal filtering and internal-hostname resolution | Differential validation of a direct private IP and a hostname resolving to the same internal destination |
+| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | ![Moderate](https://img.shields.io/badge/Moderate-8A6500?style=flat-square) **6.5 · CVSS 3.1** (GHSA) | Private-note authorization inconsistency between the API and web detail view | Visibility-matrix validation using two users and two interfaces |
+| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | ![Moderate](https://img.shields.io/badge/Moderate-8A6500?style=flat-square) **5.4 · CVSS 3.1** (GHSA) | Missing server-side `state` binding between OAuth authorization request and callback | Callback replay and session-swapping validation using two browser sessions |
 
 <details>
 <summary><strong>CVSS provenance (checked 2026-08-09)</strong></summary>
@@ -370,9 +370,9 @@ Three additional issues found through the same early research workflow have assi
 
 | Assigned identifier | Target description | Severity / CVSS | Publication state | Detail boundary |
 | --- | --- | --- | --- | --- |
-| CVE-2026-33546 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-33547 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-41210 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33546 | Streaming software | ![Not publicly scored](https://img.shields.io/badge/Not_publicly_scored-6B7280?style=flat-square) | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33547 | Streaming software | ![Not publicly scored](https://img.shields.io/badge/Not_publicly_scored-6B7280?style=flat-square) | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-41210 | Streaming software | ![Not publicly scored](https://img.shields.io/badge/Not_publicly_scored-6B7280?style=flat-square) | Upstream publication pending | Technical details intentionally omitted |
 
 <details>
 <summary><strong>CVSS provenance (checked 2026-08-09)</strong></summary>
