@@ -340,11 +340,21 @@ Dual scan은 `artifacts/dual-session-<timestamp>/{blind,signal,merged}/` 구조�
 
 **TABLE III — PUBLICLY DISCLOSED SECURITY OUTCOMES**
 
-| Public outcome | Project | Publicly documented security boundary | Validation pattern |
-| --- | --- | --- | --- |
-| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | Private-IP literal filtering과 internal-hostname resolution 사이의 SSRF destination mismatch | Direct private IP와 동일 internal destination을 가리키는 hostname의 differential validation |
-| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | API와 web detail view 사이의 private-note authorization inconsistency | 두 사용자와 두 interface를 이용한 visibility matrix 검증 |
-| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | OAuth authorization request와 callback 사이의 server-side `state` binding 부재 | 두 browser session을 이용한 callback replay와 session-swapping 검증 |
+| Public outcome | Project | Severity / CVSS | Publicly documented security boundary | Validation pattern |
+| --- | --- | --- | --- | --- |
+| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | **High · 8.5 · CVSS 3.1** (GHSA) | Private-IP literal filtering과 internal-hostname resolution 사이의 SSRF destination mismatch | Direct private IP와 동일 internal destination을 가리키는 hostname의 differential validation |
+| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | **Moderate · 6.5 · CVSS 3.1** (GHSA) | API와 web detail view 사이의 private-note authorization inconsistency | 두 사용자와 두 interface를 이용한 visibility matrix 검증 |
+| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | **Moderate · 5.4 · CVSS 3.1** (GHSA) | OAuth authorization request와 callback 사이의 server-side `state` binding 부재 | 두 browser session을 이용한 callback replay와 session-swapping 검증 |
+
+<details>
+<summary><strong>CVSS 출처 (2026-08-09 확인)</strong></summary>
+
+- `CVE-2026-33953`: linked GitHub Security Advisory · 8.5 High · `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N`
+- `CVE-2026-33954`: linked GitHub Security Advisory · 6.5 Moderate · `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N`
+- `CVE-2026-34460`: linked GitHub Security Advisory · 5.4 Moderate · `CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N`
+- 공식 공개 점수와 vector를 옮겼으며 별도로 재산정하지 않았다.
+
+</details>
 
 공식 advisory는 세 건 모두 researcher의 reporting account인 [`@Amemoyoi`](https://github.com/Amemoyoi)를 reporter로 기록한다.
 
@@ -358,11 +368,19 @@ Dual scan은 `artifacts/dual-session-<timestamp>/{blind,signal,merged}/` 구조�
 
 **TABLE IV — ASSIGNED IDENTIFIERS PENDING UPSTREAM PUBLICATION**
 
-| Assigned identifier | Target description | Publication state | Detail boundary |
-| --- | --- | --- | --- |
-| CVE-2026-33546 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-33547 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-41210 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
+| Assigned identifier | Target description | Severity / CVSS | Publication state | Detail boundary |
+| --- | --- | --- | --- | --- |
+| CVE-2026-33546 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33547 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-41210 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+
+<details>
+<summary><strong>CVSS 출처 (2026-08-09 확인)</strong></summary>
+
+- 세 식별자 모두 공개 CNA/CVE record 또는 upstream advisory가 없어 공개 severity, score, vector가 없다.
+- 자체 점수를 산정하지 않았으며 공식 publication 후 갱신할 수 있다.
+
+</details>
 
 이 세 건은 연구 성과의 assigned CVE로 기록하되, upstream advisory가 공개되기 전까지 위 public outcome 표와 공개 CVE 소계에는 포함하지 않는다.
 

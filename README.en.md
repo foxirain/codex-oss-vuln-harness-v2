@@ -340,11 +340,21 @@ This repository preserves the early lineage of a real OSS security-research work
 
 **TABLE III — PUBLICLY DISCLOSED SECURITY OUTCOMES**
 
-| Public outcome | Project | Publicly documented security boundary | Validation pattern |
-| --- | --- | --- | --- |
-| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | SSRF destination mismatch between private-IP literal filtering and internal-hostname resolution | Differential validation of a direct private IP and a hostname resolving to the same internal destination |
-| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | Private-note authorization inconsistency between the API and web detail view | Visibility-matrix validation using two users and two interfaces |
-| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | Missing server-side `state` binding between OAuth authorization request and callback | Callback replay and session-swapping validation using two browser sessions |
+| Public outcome | Project | Severity / CVSS | Publicly documented security boundary | Validation pattern |
+| --- | --- | --- | --- | --- |
+| [CVE-2026-33953](https://github.com/Kovah/LinkAce/security/advisories/GHSA-wp4g-qw9j-wfjg) | LinkAce | **High · 8.5 · CVSS 3.1** (GHSA) | SSRF destination mismatch between private-IP literal filtering and internal-hostname resolution | Differential validation of a direct private IP and a hostname resolving to the same internal destination |
+| [CVE-2026-33954](https://github.com/Kovah/LinkAce/security/advisories/GHSA-88h3-cq25-vw8q) | LinkAce | **Moderate · 6.5 · CVSS 3.1** (GHSA) | Private-note authorization inconsistency between the API and web detail view | Visibility-matrix validation using two users and two interfaces |
+| [CVE-2026-34460](https://github.com/NamelessMC/Nameless/security/advisories/GHSA-pmpw-2xvh-5xj6) | NamelessMC | **Moderate · 5.4 · CVSS 3.1** (GHSA) | Missing server-side `state` binding between OAuth authorization request and callback | Callback replay and session-swapping validation using two browser sessions |
+
+<details>
+<summary><strong>CVSS provenance (checked 2026-08-09)</strong></summary>
+
+- `CVE-2026-33953`: linked GitHub Security Advisory · 8.5 High · `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N`
+- `CVE-2026-33954`: linked GitHub Security Advisory · 6.5 Moderate · `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N`
+- `CVE-2026-34460`: linked GitHub Security Advisory · 5.4 Moderate · `CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N`
+- The officially published scores and vectors are reproduced without independent rescoring.
+
+</details>
 
 All three official advisories list the researcher's reporting account, [`@Amemoyoi`](https://github.com/Amemoyoi), as the reporter.
 
@@ -358,11 +368,19 @@ Three additional issues found through the same early research workflow have assi
 
 **TABLE IV — ASSIGNED IDENTIFIERS PENDING UPSTREAM PUBLICATION**
 
-| Assigned identifier | Target description | Publication state | Detail boundary |
-| --- | --- | --- | --- |
-| CVE-2026-33546 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-33547 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
-| CVE-2026-41210 | Streaming software | Upstream publication pending | Technical details intentionally omitted |
+| Assigned identifier | Target description | Severity / CVSS | Publication state | Detail boundary |
+| --- | --- | --- | --- | --- |
+| CVE-2026-33546 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-33547 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+| CVE-2026-41210 | Streaming software | **Not publicly scored** | Upstream publication pending | Technical details intentionally omitted |
+
+<details>
+<summary><strong>CVSS provenance (checked 2026-08-09)</strong></summary>
+
+- None of the three identifiers has a public CNA/CVE record or upstream advisory with a published severity, score, or vector.
+- No independent scores were assigned; these entries can be updated after official publication.
+
+</details>
 
 These three are recorded as assigned CVEs from the research, but they are excluded from the public-outcome table and disclosed-CVE subtotal above until the upstream advisories are published.
 
