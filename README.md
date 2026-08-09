@@ -1,5 +1,7 @@
 # Codex OSS Vulnerability Harness v2
 
+[한국어](README.md) | [English](README.en.md)
+
 [![CI](https://github.com/foxirain/codex-oss-vuln-harness-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/foxirain/codex-oss-vuln-harness-v2/actions/workflows/ci.yml)
 
 <p align="center"><strong>Research Tool · Standalone Import: 5 April 2026 · Documentation Revision: 25 July 2026</strong></p>
